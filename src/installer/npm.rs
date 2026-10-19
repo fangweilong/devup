@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use crate::network::mirrors::NPM_MIRROR_REGISTRY;
 
 pub struct NpmInstaller;
 
@@ -21,7 +22,7 @@ impl NpmInstaller {
             .arg("install")
             .arg("-g")
             .arg(package_name)
-            .arg("--registry=https://registry.npmmirror.com");
+            .arg(format!("--registry={}", NPM_MIRROR_REGISTRY));
 
         if let Some(proxy) = proxy_url {
             if !proxy.trim().is_empty() {

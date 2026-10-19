@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::network::downloader::{create_http_client, download_file};
-use crate::network::mirrors::find_fastest_github_url;
+use crate::network::mirrors::{find_fastest_github_url, NODEJS_MIRROR_BASE};
 use crate::state::AppEvent;
 
 use msi::WindowsInstaller;
@@ -77,12 +77,12 @@ impl InstallerEngine {
             }
 
             "nodejs" => {
-                let download_url = "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi";
+                let download_url = format!("{}/v20.18.0/node-v20.18.0-x64.msi", NODEJS_MIRROR_BASE);
                 send_log(format!("正在从阿里 Node.js 镜像高速下载: {}", download_url));
 
                 let dest = temp_dir.join("node-v20.18.0-x64.msi");
                 let tx_progress = event_sender.clone();
-                download_file(&client, download_url, &dest, software_id, move |p| {
+                download_file(&client, &download_url, &dest, software_id, move |p| {
                     let _ = tx_progress.send(AppEvent::Progress(p));
                 })
                 .await?;
