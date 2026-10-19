@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -92,14 +91,33 @@ impl SelfUpdater {
             .to_string();
 
         if Self::is_newer(&current_version, &remote_version) {
-            // 找到包含 devup.exe 的 asset
-            let exe_asset = release
+            // 按当前平台匹配 Release 资产
+            #[cfg(windows)]
+            let platform_asset = release
                 .assets
                 .iter()
                 .find(|a| a.name.eq_ignore_ascii_case("devup.exe"))
                 .or_else(|| release.assets.iter().find(|a| a.name.ends_with(".exe")));
 
-            if let Some(asset) = exe_asset {
+            #[cfg(target_os = "macos")]
+            let platform_asset = {
+                let expect = format!("devup-macos-{}", crate::platform::mac_arch_label());
+                release
+                    .assets
+                    .iter()
+                    .find(|a| a.name.eq_ignore_ascii_case(&expect))
+                    .or_else(|| {
+                        release.assets.iter().find(|a| {
+                            let n = a.name.to_lowercase();
+                            (n.contains("macos") || n.contains("darwin")) && !n.ends_with(".sha256")
+                        })
+                    })
+            };
+
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let platform_asset = Option::<&GitHubAsset>::None;
+
+            if let Some(asset) = platform_asset {
                 return Ok(Some(UpdateInfo {
                     current_version,
                     latest_version: remote_version,
@@ -123,8 +141,14 @@ impl SelfUpdater {
         let current_exe = std::env::current_exe().context("无法获取当前程序绝对路径")?;
         let exe_dir = current_exe.parent().context("无法获取程序安装所在目录")?;
 
-        let new_exe = exe_dir.join("devup.exe.new");
-        let old_exe = exe_dir.join("devup.exe.old");
+        // 以当前可执行文件名为基准确定 .new/.old 路径（Windows: devup.exe.new；macOS: devup.new）
+        let exe_name = current_exe
+            .file_name()
+            .context("无法获取当前可执行文件名")?
+            .to_string_lossy()
+            .to_string();
+        let new_exe = exe_dir.join(format!("{}.new", exe_name));
+        let old_exe = exe_dir.join(format!("{}.old", exe_name));
 
         let _ = event_sender.send(AppEvent::Log {
             target_id: "self_update".to_string(),
@@ -163,6 +187,15 @@ impl SelfUpdater {
             );
         }
 
+        // Unix 系需要补上可执行权限（Windows 以扩展名区分，无需处理）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&new_exe, std::fs::Permissions::from_mode(0o755))
+                .await
+                .context("设置新版本文件可执行权限失败")?;
+        }
+
         let _ = event_sender.send(AppEvent::Log {
             target_id: "self_update".to_string(),
             message: "下载完成，正在进行原子重命名替换并准备重启...".to_string(),
@@ -173,7 +206,7 @@ impl SelfUpdater {
             let _ = std::fs::remove_file(&old_exe);
         }
 
-        // 2. Windows NTFS 核心突破：将运行中的当前进程重命名为 .old
+        // 2. 将运行中的当前进程镜像重命名为 .old（NTFS 与 APFS 均允许重命名正在执行的可执行文件）
         std::fs::rename(&current_exe, &old_exe)
             .context("重命名当前可执行文件失败 (请确认当前目录具备写权限)")?;
 

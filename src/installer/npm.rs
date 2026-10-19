@@ -1,8 +1,64 @@
 use anyhow::{bail, Context, Result};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use crate::network::mirrors::NPM_MIRROR_REGISTRY;
+
+/// 构造跨平台的命令包装器：Windows 经由 cmd.exe /c（解析 npm 的 .cmd shim），
+/// Unix/macOS 直接执行命令并注入扩展后的 PATH
+#[cfg(windows)]
+fn wrap_command(name: &str) -> Command {
+    let mut cmd = Command::new("cmd.exe");
+    cmd.creation_flags(0x08000000);
+    cmd.arg("/c").arg(name);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn wrap_command(name: &str) -> Command {
+    let resolved = crate::platform::which(name)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    let mut cmd = Command::new(resolved);
+    cmd.env("PATH", crate::platform::child_path());
+    cmd
+}
+
+/// 排空子进程 stdout/stderr 并逐行回调，防止管道写满导致死锁
+async fn pump_output<F>(child: &mut Child, mut on_log: F)
+where
+    F: FnMut(String),
+{
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    if let Some(stdout) = child.stdout.take() {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let _ = tx.send(line);
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let _ = tx.send(line);
+            }
+        });
+    }
+    drop(tx);
+
+    while let Some(line) = rx.recv().await {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            on_log(trimmed.to_string());
+        }
+    }
+}
 
 pub struct NpmInstaller;
 
@@ -11,17 +67,13 @@ impl NpmInstaller {
     pub async fn install_global<F>(
         package_name: &str,
         proxy_url: Option<&str>,
-        mut on_log: F,
+        on_log: F,
     ) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
     {
-        let mut cmd = Command::new("cmd.exe");
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        cmd.arg("/c")
-            .arg("npm")
-            .arg("install")
+        let mut cmd = wrap_command("npm");
+        cmd.arg("install")
             .arg("-g")
             .arg(package_name)
             .arg(format!("--registry={}", NPM_MIRROR_REGISTRY));
@@ -40,12 +92,7 @@ impl NpmInstaller {
             .spawn()
             .with_context(|| format!("启动 npm 安装进程失败，请确认系统已安装 Node.js/npm: {}", package_name))?;
 
-        if let Some(stdout) = child.stdout.take() {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                on_log(line);
-            }
-        }
+        pump_output(&mut child, on_log).await;
 
         let status = child.wait().await?;
         if status.success() {
@@ -60,15 +107,12 @@ impl NpmInstaller {
         cmd_name: &str,
         args: &[&str],
         proxy_url: Option<&str>,
-        mut on_log: F,
+        on_log: F,
     ) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
     {
-        let mut cmd = Command::new("cmd.exe");
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        cmd.arg("/c").arg(cmd_name);
+        let mut cmd = wrap_command(cmd_name);
         for a in args {
             cmd.arg(a);
         }
@@ -87,15 +131,7 @@ impl NpmInstaller {
             .spawn()
             .with_context(|| format!("启动命令失败: {} {:?}", cmd_name, args))?;
 
-        if let Some(stdout) = child.stdout.take() {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    on_log(trimmed.to_string());
-                }
-            }
-        }
+        pump_output(&mut child, on_log).await;
 
         let status = child.wait().await?;
         if status.success() {
@@ -106,14 +142,12 @@ impl NpmInstaller {
     }
 
     /// 执行 npm 全局包卸载
-    pub async fn uninstall_global<F>(package_name: &str, mut on_log: F) -> Result<()>
+    pub async fn uninstall_global<F>(package_name: &str, on_log: F) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
     {
-        let mut cmd = Command::new("cmd.exe");
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-        cmd.args(["/c", "npm", "uninstall", "-g", package_name]);
+        let mut cmd = wrap_command("npm");
+        cmd.args(["uninstall", "-g", package_name]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -121,15 +155,7 @@ impl NpmInstaller {
             .spawn()
             .with_context(|| format!("启动 npm 卸载进程失败: {}", package_name))?;
 
-        if let Some(stdout) = child.stdout.take() {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    on_log(trimmed.to_string());
-                }
-            }
-        }
+        pump_output(&mut child, on_log).await;
 
         let status = child.wait().await?;
         if status.success() {

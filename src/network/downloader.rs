@@ -18,7 +18,7 @@ pub struct DownloadProgress {
 
 pub fn create_http_client(proxy_url: Option<&str>) -> Result<Client> {
     let mut builder = Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) DevUp/0.1.0")
+        .user_agent(concat!("DevUp/", env!("CARGO_PKG_VERSION"), " (https://github.com/fangweilong/devup)"))
         .timeout(std::time::Duration::from_secs(600));
 
     if let Some(p) = proxy_url {

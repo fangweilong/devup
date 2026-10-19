@@ -4,57 +4,73 @@ on:
   push:
     branches:
       - main
+      - 'feat/**'
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
+
 permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.vars.outputs.tag }}
+      should_release: ${{ steps.vars.outputs.should }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Extract & Sync Version Tag
+      - name: Resolve version tag
         id: vars
-        shell: pwsh
+        shell: bash
         run: |
-          $cargoVersion = (Get-Content Cargo.toml | Select-String -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
-          Write-Host "Detected Cargo version: $cargoVersion"
-          $targetTag = "v$cargoVersion"
-          
-          $shouldRelease = $false
-          if ($env:GITHUB_REF -like "refs/tags/*") {
-            $tag = $env:GITHUB_REF_NAME
-            $shouldRelease = $true
-            Write-Host "Triggered by git tag: $tag"
-          } else {
-            $tagExists = git tag -l $targetTag
-            if (-not $tagExists) {
-              Write-Host "Creating new git tag $targetTag and pushing to repository..."
+          cargo_version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          target_tag="v${cargo_version}"
+          tag="$target_tag"
+          should=false
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # tag 推送：直接以该 tag 发布
+            tag="$GITHUB_REF_NAME"
+            should=true
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # 手动触发：总是发布；tag 不存在则补打
+            should=true
+            if ! git tag -l "$target_tag" | grep -q .; then
               git config user.name "github-actions[bot]"
               git config user.email "github-actions[bot]@users.noreply.github.com"
-              git tag $targetTag
-              git push origin $targetTag
-              $shouldRelease = $true
-            } else {
-              Write-Host "Tag $targetTag already exists in repository."
-              if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
-                $shouldRelease = $true
-              }
-            }
-            $tag = $targetTag
-          }
-          
-          echo "TAG_NAME=$tag" >> $env:GITHUB_ENV
-          echo "SHOULD_RELEASE=$shouldRelease" >> $env:GITHUB_ENV
+              git tag "$target_tag"
+              git push origin "$target_tag"
+            fi
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            # main 分支推送：tag 尚不存在时自动打 tag 并发布
+            if ! git tag -l "$target_tag" | grep -q .; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag "$target_tag"
+              git push origin "$target_tag"
+              should=true
+            fi
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "should=$should" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
@@ -62,8 +78,7 @@ jobs:
         run: cargo build --release --locked
 
       - name: Rename Executable
-        run: |
-          Copy-Item target/release/devup.exe -Destination devup.exe
+        run: Copy-Item target/release/devup.exe -Destination devup.exe
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
@@ -71,11 +86,57 @@ jobs:
           name: devup-windows-x64
           path: devup.exe
 
+  build-macos:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            label: arm64
+          - target: x86_64-apple-darwin
+            label: x64
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Rename Binary
+        run: cp target/${{ matrix.target }}/release/devup devup-macos-${{ matrix.label }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: devup-macos-${{ matrix.label }}
+          path: devup-macos-${{ matrix.label }}
+
+  release:
+    needs: [version, build-windows, build-macos]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: env.SHOULD_RELEASE == 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: DevUp ${{ env.TAG_NAME }}
-          files: devup.exe
+          tag_name: ${{ needs.version.outputs.tag_name }}
+          name: DevUp ${{ needs.version.outputs.tag_name }}
+          files: |
+            devup.exe
+            devup-macos-arm64
+            devup-macos-x64
           generate_release_notes: true

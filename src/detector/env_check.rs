@@ -53,7 +53,57 @@ impl Detector {
         trimmed.to_string()
     }
 
+    /// 探测命令是否存在并读取版本输出（跨平台入口）
     pub fn check_command(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
+        #[cfg(windows)]
+        {
+            Self::check_command_windows(cmd, version_arg)
+        }
+        #[cfg(not(windows))]
+        {
+            Self::check_command_unix(cmd, version_arg)
+        }
+    }
+
+    /// Unix/macOS：which 风格查找 + 直接执行取版本（GUI 进程需扩展 PATH）
+    #[cfg(not(windows))]
+    fn check_command_unix(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
+        let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
+
+        let path = crate::platform::which(base_cmd)
+            .or_else(|| crate::platform::which(cmd))
+            .map(|p| p.to_string_lossy().to_string());
+        let Some(found) = path else {
+            return (false, None, None);
+        };
+
+        let mut command = Command::new(&found);
+        command.arg(version_arg);
+        command.env("PATH", crate::platform::child_path());
+
+        let version = command.output().ok().and_then(|out| {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if s.is_empty() {
+                    let err_s = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    if !err_s.is_empty() {
+                        return Some(err_s.lines().next().unwrap_or("").to_string());
+                    }
+                    None
+                } else {
+                    Some(s.lines().next().unwrap_or("").to_string())
+                }
+            } else {
+                None
+            }
+        }).map(|raw| Self::clean_version_string(&raw));
+
+        (true, version, Some(found))
+    }
+
+    /// Windows: where.exe 探测 + cmd /c 兜底执行（支持 npm 全局 .cmd shim）
+    #[cfg(windows)]
+    fn check_command_windows(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
         let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
 
         // 1. 先用 where.exe 探测（同时支持 .exe, .cmd, .bat 等扩展名）
@@ -128,10 +178,10 @@ impl Detector {
         (true, version, cmd_path)
     }
 
-    /// 检测 Windows Terminal 状态与版本
+    /// 检测 Windows Terminal 状态与版本（仅 Windows）
     /// 避免直接运行 `wt.exe -v` / `--version` 触发 GUI 弹窗
+    #[cfg(windows)]
     pub fn check_windows_terminal() -> (bool, Option<String>, Option<String>) {
-        #[cfg(windows)]
         {
             // 优先从注册表 App Paths 读取安装路径并提取版本号
             let query_reg = |hkey| -> Option<String> {
@@ -168,14 +218,63 @@ impl Detector {
     /// 分析可执行文件路径，判定其安装途径
     pub fn infer_install_method(path_opt: Option<&str>, default_method: &str) -> Option<String> {
         let p = path_opt?.to_lowercase();
-        if p.contains("windowsapps") {
-            Some("winget".to_string())
-        } else if p.contains("node_modules") || p.contains("npm") || p.contains("nvm") {
-            Some("npm".to_string())
-        } else if p.contains(".local\\bin") || p.contains("appdata\\local\\omp") || p.contains("appdata\\local\\pi") {
-            Some("native_cli".to_string())
+        #[cfg(windows)]
+        {
+            if p.contains("windowsapps") {
+                Some("winget".to_string())
+            } else if p.contains("node_modules") || p.contains("npm") || p.contains("nvm") {
+                Some("npm".to_string())
+            } else if p.contains(".local\\bin") || p.contains("appdata\\local\\omp") || p.contains("appdata\\local\\pi") {
+                Some("native_cli".to_string())
+            } else {
+                Some(default_method.to_string())
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if p.contains("/homebrew/") || p.contains("/cellar") {
+                Some("brew".to_string())
+            } else if p.contains("node_modules") || p.contains("/npm/") || p.contains("nvm") {
+                Some("npm".to_string())
+            } else if p.contains(".local/bin") {
+                Some("native_cli".to_string())
+            } else if p.starts_with("/usr/bin") || p.starts_with("/bin") || p.starts_with("/sbin") {
+                Some("system".to_string())
+            } else {
+                Some(default_method.to_string())
+            }
+        }
+    }
+
+    /// 检测一个 CLI 软件并组装状态卡片数据
+    fn probe_software(
+        id: &str,
+        name: &str,
+        category: &str,
+        description: &str,
+        repo_url: &str,
+        cli: &str,
+        default_method: &str,
+        latest_version: Option<&str>,
+        default_channel: &str,
+    ) -> SoftwareStatus {
+        let (ok, ver, path) = Self::check_command(cli, "--version");
+        let method = if ok {
+            Self::infer_install_method(path.as_deref(), default_method)
         } else {
-            Some(default_method.to_string())
+            None
+        };
+        SoftwareStatus {
+            id: id.into(),
+            name: name.into(),
+            category: category.into(),
+            description: description.into(),
+            repo_url: repo_url.into(),
+            installed: ok,
+            version: ver,
+            latest_version: latest_version.map(|s| s.to_string()),
+            install_method: method,
+            default_channel: default_channel.into(),
         }
     }
 
@@ -183,174 +282,187 @@ impl Detector {
     pub fn detect_all() -> Vec<SoftwareStatus> {
         let mut list = Vec::new();
 
-        // 1. 基础开发环境 (Prerequisites)
-        let (wt_ok, wt_ver, wt_method) = Self::check_windows_terminal();
-        list.push(SoftwareStatus {
-            id: "windows_terminal".into(),
-            name: "Windows Terminal".into(),
-            category: "env".into(),
-            description: "微软现代终端，支持多标签页、GPU 加速与 Unicode".into(),
-            repo_url: "https://github.com/microsoft/terminal".into(),
-            installed: wt_ok,
-            version: wt_ver,
-            latest_version: Some("v1.25.2733.0".into()),
-            install_method: wt_method,
-            default_channel: "WinGet / 微软官方MSIXBundle".into(),
-        });
+        // 1. 基础开发环境 (Prerequisites) —— 按平台差异化
+        #[cfg(windows)]
+        {
+            let (wt_ok, wt_ver, wt_method) = Self::check_windows_terminal();
+            list.push(SoftwareStatus {
+                id: "windows_terminal".into(),
+                name: "Windows Terminal".into(),
+                category: "env".into(),
+                description: "微软现代终端，支持多标签页、GPU 加速与 Unicode".into(),
+                repo_url: "https://github.com/microsoft/terminal".into(),
+                installed: wt_ok,
+                version: wt_ver,
+                latest_version: Some("v1.25.2733.0".into()),
+                install_method: wt_method,
+                default_channel: "WinGet / 微软官方MSIXBundle".into(),
+            });
 
-        let (pwsh_ok, pwsh_ver, pwsh_path) = Self::check_command("pwsh.exe", "--version");
-        let pwsh_method = if pwsh_ok {
-            Self::infer_install_method(pwsh_path.as_deref(), "msi")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "powershell7".into(),
-            name: "PowerShell 7".into(),
-            category: "env".into(),
-            description: "跨平台全新 PowerShell，现代脚本与 Agent 执行基础".into(),
-            repo_url: "https://github.com/PowerShell/PowerShell".into(),
-            installed: pwsh_ok,
-            version: pwsh_ver,
-            latest_version: Some("v7.6.7".into()),
-            install_method: pwsh_method,
-            default_channel: "GitHub加速镜像 / WinGet".into(),
-        });
+            list.push(Self::probe_software(
+                "powershell7",
+                "PowerShell 7",
+                "env",
+                "跨平台全新 PowerShell，现代脚本与 Agent 执行基础".into(),
+                "https://github.com/PowerShell/PowerShell",
+                "pwsh.exe",
+                "msi",
+                Some("v7.6.7"),
+                "GitHub加速镜像 / WinGet",
+            ));
 
-        let (node_ok, node_ver, node_path) = Self::check_command("node.exe", "--version");
-        let node_method = if node_ok {
-            Self::infer_install_method(node_path.as_deref(), "msi")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "nodejs".into(),
-            name: "Node.js (LTS)".into(),
-            category: "env".into(),
-            description: "Claude Code、Codex、Pi 等 Agent 必备的运行环境".into(),
-            repo_url: "https://nodejs.org".into(),
-            installed: node_ok,
-            version: node_ver,
-            latest_version: Some("v24.21.0".into()),
-            install_method: node_method,
-            default_channel: "阿里npmmirror镜像官方MSI".into(),
-        });
+            list.push(Self::probe_software(
+                "nodejs",
+                "Node.js (LTS)",
+                "env",
+                "Claude Code、Codex、Pi 等 Agent 必备的运行环境".into(),
+                "https://nodejs.org",
+                "node.exe",
+                "msi",
+                Some("v24.21.0"),
+                "阿里npmmirror镜像官方MSI",
+            ));
 
-        let (git_ok, git_ver, git_path) = Self::check_command("git.exe", "--version");
-        let git_method = if git_ok {
-            Self::infer_install_method(git_path.as_deref(), "installer")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "git".into(),
-            name: "Git".into(),
-            category: "env".into(),
-            description: "代码版本管理系统，绝大多数 Agent 的依赖项".into(),
-            repo_url: "https://git-scm.com".into(),
-            installed: git_ok,
-            version: git_ver,
-            latest_version: Some("v2.56.0".into()),
-            install_method: git_method,
-            default_channel: "GitHub加速镜像 / WinGet".into(),
-        });
+            list.push(Self::probe_software(
+                "git",
+                "Git",
+                "env",
+                "代码版本管理系统，绝大多数 Agent 的依赖项".into(),
+                "https://git-scm.com",
+                "git.exe",
+                "installer",
+                Some("v2.56.0"),
+                "GitHub加速镜像 / WinGet",
+            ));
+        }
 
-        // 2. AI Coding Agents
-        let (omp_ok, omp_ver, omp_path) = Self::check_command("omp.exe", "--version");
-        let omp_method = if omp_ok {
-            Self::infer_install_method(omp_path.as_deref(), "native_cli")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "oh-my-pi".into(),
-            name: "oh-my-pi (omp)".into(),
-            category: "agent".into(),
-            description: "带 IDE 级工具与高级编辑功能的终端 AI 编程智能体".into(),
-            repo_url: "https://github.com/can1357/oh-my-pi".into(),
-            installed: omp_ok,
-            version: omp_ver,
-            latest_version: Some("v18.12.2".into()),
-            install_method: omp_method,
-            default_channel: "官方原生更新器 / npmmirror".into(),
-        });
+        #[cfg(target_os = "macos")]
+        {
+            list.push(Self::probe_software(
+                "homebrew",
+                "Homebrew",
+                "env",
+                "macOS 事实标准包管理器，托管 Node.js / Git 等工具链".into(),
+                "https://brew.sh",
+                "brew",
+                "script",
+                None,
+                "官方脚本 / 清华镜像加速",
+            ));
 
-        let (claude_ok, claude_ver, claude_path) = Self::check_command("claude.exe", "--version");
-        let claude_method = if claude_ok {
-            Self::infer_install_method(claude_path.as_deref(), "native_cli")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "claudecode".into(),
-            name: "Claude Code".into(),
-            category: "agent".into(),
-            description: "Anthropic 官方研究级终端编码智能体 CLI".into(),
-            repo_url: "https://github.com/anthropics/claude-code".into(),
-            installed: claude_ok,
-            version: claude_ver,
-            latest_version: Some("v2.1.303".into()),
-            install_method: claude_method,
-            default_channel: "Anthropic原生更新器 / npmmirror".into(),
-        });
+            list.push(Self::probe_software(
+                "nodejs",
+                "Node.js (LTS)",
+                "env",
+                "Claude Code、Codex、Pi 等 Agent 必备的运行环境".into(),
+                "https://nodejs.org",
+                "node",
+                "pkg",
+                Some("v24.21.0"),
+                "Homebrew / 阿里npmmirror官方PKG",
+            ));
 
-        let (codex_ok, codex_ver, codex_path) = Self::check_command("codex.exe", "--version");
-        let codex_method = if codex_ok {
-            Self::infer_install_method(codex_path.as_deref(), "npm")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "codex".into(),
-            name: "OpenAI Codex".into(),
-            category: "agent".into(),
-            description: "OpenAI 官方开源轻量级终端 Coding Agent".into(),
-            repo_url: "https://github.com/openai/codex".into(),
-            installed: codex_ok,
-            version: codex_ver,
-            latest_version: Some("v0.163.0".into()),
-            install_method: codex_method,
-            default_channel: "官方npm包 (@openai/codex)".into(),
-        });
+            list.push(Self::probe_software(
+                "git",
+                "Git",
+                "env",
+                "代码版本管理系统，绝大多数 Agent 的依赖项".into(),
+                "https://git-scm.com",
+                "git",
+                "system",
+                Some("v2.56.0"),
+                "Homebrew / Xcode 命令行工具",
+            ));
+        }
 
-        let (pi_ok, pi_ver, pi_path) = Self::check_command("pi.exe", "--version");
-        let pi_method = if pi_ok {
-            Self::infer_install_method(pi_path.as_deref(), "native_cli")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "pi".into(),
-            name: "Pi Agent".into(),
-            category: "agent".into(),
-            description: "Earendil Works 统一 LLM 循环与终端交互编程框架".into(),
-            repo_url: "https://github.com/earendil-works/pi".into(),
-            installed: pi_ok,
-            version: pi_ver,
-            latest_version: Some("v1.3.0".into()),
-            install_method: pi_method,
-            default_channel: "官方原生更新器 / npmmirror".into(),
-        });
+        // 2. AI Coding Agents（跨平台一致，check_command 自动处理 .exe 后缀）
+        list.push(Self::probe_software(
+            "oh-my-pi",
+            "oh-my-pi (omp)",
+            "agent",
+            "带 IDE 级工具与高级编辑功能的终端 AI 编程智能体".into(),
+            "https://github.com/can1357/oh-my-pi",
+            "omp",
+            "native_cli",
+            Some("v18.12.2"),
+            "官方原生更新器 / npmmirror",
+        ));
 
-        let (opencode_ok, opencode_ver, opencode_path) = Self::check_command("opencode.exe", "--version");
-        let opencode_method = if opencode_ok {
-            Self::infer_install_method(opencode_path.as_deref(), "npm")
-        } else {
-            None
-        };
-        list.push(SoftwareStatus {
-            id: "opencode".into(),
-            name: "OpenCode".into(),
-            category: "agent".into(),
-            description: "Anomaly 团队开源的高性能轻量 Coding Agent".into(),
-            repo_url: "https://github.com/anomalyco/opencode".into(),
-            installed: opencode_ok,
-            version: opencode_ver,
-            latest_version: Some("v2.0.32".into()),
-            install_method: opencode_method,
-            default_channel: "官方CLI自升级 / npmmirror".into(),
-        });
+        list.push(Self::probe_software(
+            "claudecode",
+            "Claude Code",
+            "agent",
+            "Anthropic 官方研究级终端编码智能体 CLI".into(),
+            "https://github.com/anthropics/claude-code",
+            "claude",
+            "native_cli",
+            Some("v2.1.303"),
+            "Anthropic原生更新器 / npmmirror",
+        ));
+
+        list.push(Self::probe_software(
+            "codex",
+            "OpenAI Codex",
+            "agent",
+            "OpenAI 官方开源轻量级终端 Coding Agent".into(),
+            "https://github.com/openai/codex",
+            "codex",
+            "npm",
+            Some("v0.163.0"),
+            "官方npm包 (@openai/codex)",
+        ));
+
+        list.push(Self::probe_software(
+            "pi",
+            "Pi Agent",
+            "agent",
+            "Earendil Works 统一 LLM 循环与终端交互编程框架".into(),
+            "https://github.com/earendil-works/pi",
+            "pi",
+            "native_cli",
+            Some("v1.3.0"),
+            "官方原生更新器 / npmmirror",
+        ));
+
+        list.push(Self::probe_software(
+            "opencode",
+            "OpenCode",
+            "agent",
+            "Anomaly 团队开源的高性能轻量 Coding Agent".into(),
+            "https://github.com/anomalyco/opencode",
+            "opencode",
+            "npm",
+            Some("v2.0.32"),
+            "官方CLI自升级 / npmmirror",
+        ));
 
         list
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clean_version_string() {
+        assert_eq!(Detector::clean_version_string("2.1.303 (Claude Code)"), "2.1.303");
+        assert_eq!(Detector::clean_version_string("codex-cli 0.163.0"), "0.163.0");
+        assert_eq!(Detector::clean_version_string("omp/18.12.2"), "18.12.2");
+        assert_eq!(Detector::clean_version_string("git version 2.55.0.windows.3"), "2.55.0");
+        assert_eq!(Detector::clean_version_string("v24.21.0"), "24.21.0");
+        assert_eq!(Detector::clean_version_string("Homebrew 4.5.11"), "4.5.11");
+    }
+
+    /// 人工核对全量探测结果：cargo test -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dump_detect_all() {
+        for s in Detector::detect_all() {
+            println!(
+                "[{}] {} installed={} ver={:?} latest={:?} method={:?} channel={}",
+                s.category, s.name, s.installed, s.version, s.latest_version, s.install_method, s.default_channel
+            );
+        }
     }
 }

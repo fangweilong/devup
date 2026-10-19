@@ -1,8 +1,9 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 mod detector;
 mod installer;
 mod network;
+mod platform;
 mod state;
 mod icon_bytes;
 mod updater;
@@ -43,9 +44,11 @@ fn build_inlined_html() -> String {
 fn main() -> anyhow::Result<()> {
     // 0. 自更新启动自检：静默清理上次原地更新遗留的 .old 旧版本文件
     if let Ok(current_exe) = std::env::current_exe() {
-        let old_exe = current_exe.with_extension("exe.old");
-        if old_exe.exists() {
-            let _ = std::fs::remove_file(old_exe);
+        if let Some(name) = current_exe.file_name().map(|n| n.to_string_lossy().to_string()) {
+            let old_exe = current_exe.with_file_name(format!("{}.old", name));
+            if old_exe.exists() {
+                let _ = std::fs::remove_file(old_exe);
+            }
         }
     }
 
@@ -138,15 +141,7 @@ fn main() -> anyhow::Result<()> {
                     let _ = tx_for_ipc.send(AppEvent::ProxyDetected { proxy });
                 }
                 Ok(IpcCommand::OpenUrl { url }) => {
-                    #[allow(unused_mut)]
-                    let mut cmd = std::process::Command::new("cmd");
-                    cmd.args(["/c", "start", "", &url]);
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x08000000);
-                    }
-                    let _ = cmd.spawn();
+                    platform::open_url(&url);
                 }
                 Ok(IpcCommand::CheckUpdate) => {
                     let tx = tx_for_ipc.clone();

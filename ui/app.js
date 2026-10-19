@@ -129,7 +129,7 @@ function showUpdateModal(data) {
   const badge = document.getElementById("update-modal-badge");
   if (badge) badge.textContent = `v${data.latest_version}`;
   const desc = document.getElementById("update-modal-desc");
-  if (desc) desc.textContent = `检测到官方发布了新版本（当前运行 v${data.current_version}，最新 v${data.latest_version}）。支持 Windows 单文件绿色免安装原地自升级与自动重启。`;
+  if (desc) desc.textContent = `检测到官方发布了新版本（当前运行 v${data.current_version}，最新 v${data.latest_version}）。支持单文件绿色免安装原地自升级与自动重启。`;
   const notes = document.getElementById("update-notes-content");
   if (notes) notes.textContent = data.release_notes || "本次更新包含性能提升与功能优化。";
   const modal = document.getElementById("update-modal");
@@ -196,6 +196,8 @@ function getAppSvgIcon(id) {
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`;
     case "nodejs":
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="m3 7 9 5 9-5"/><path d="M12 12v10"/></svg>`;
+    case "homebrew":
+      return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 22h8"/><path d="M7 13.742C7 10.5 10 6.5 12 4c2 2.5 5 6.5 5 9.742C17 16.012 14.54 18 12 18s-5-1.988-5-4.258"/><path d="M7 21c0-1.197.838-2.692 1-3h8c.162.308 1 1.803 1 3"/></svg>`;
     case "git":
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>`;
     case "claudecode":
