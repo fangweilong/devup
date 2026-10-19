@@ -87,8 +87,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut builder = WindowBuilder::new()
         .with_title("DevUp · 现代化开发环境与 AI 工具链管家")
-        .with_inner_size(LogicalSize::new(960.0, 720.0))
-        .with_min_inner_size(LogicalSize::new(860.0, 620.0));
+        .with_inner_size(LogicalSize::new(1200.0, 820.0))
+        .with_min_inner_size(LogicalSize::new(1000.0, 680.0));
 
     if let Some(icon) = window_icon {
         builder = builder.with_window_icon(Some(icon));
