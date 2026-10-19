@@ -322,5 +322,7 @@ impl Detector {
             install_method: opencode_method,
             default_channel: "官方CLI自升级 / npmmirror".into(),
         });
+
+        list
     }
 }
