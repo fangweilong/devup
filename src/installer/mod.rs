@@ -59,6 +59,23 @@ impl InstallerEngine {
             }
 
             "windows_terminal" => {
+                // 如果系统支持 winget 且已通过应用商店/winget 安装，优先通过 winget 静默更新
+                if WindowsInstaller::is_installed_via_winget("Microsoft.WindowsTerminal").await {
+                    send_log("检测到 Windows Terminal 来自 WinGet/应用商店，执行原生渠道静默升级...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    if let Ok(()) = WindowsInstaller::upgrade_via_winget("Microsoft.WindowsTerminal", move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await {
+                        send_log("Windows Terminal 通过 WinGet 渠道更新成功！".into());
+                        return Ok(());
+                    }
+                    send_log("WinGet 渠道更新失败或已是最新，回退到国内 GitHub 离线包安装...".into());
+                }
+
                 let raw_url = "https://github.com/microsoft/terminal/releases/download/v1.21.3231.0/Microsoft.WindowsTerminal_Win10_1.21.3231.0_8wekyb3d8bbwe.msixbundle";
                 send_log("正在连接国内 GitHub 加速节点...".into());
                 let download_url = find_fastest_github_url(&client, raw_url).await;
@@ -93,6 +110,23 @@ impl InstallerEngine {
             }
 
             "git" => {
+                // 如果检测到系统通过 winget 管理 Git，优先调用 winget upgrade
+                if WindowsInstaller::is_installed_via_winget("Git.Git").await {
+                    send_log("检测到 Git 注册于 WinGet，优先执行 winget 原生渠道更新...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    if let Ok(()) = WindowsInstaller::upgrade_via_winget("Git.Git", move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await {
+                        send_log("Git 通过 WinGet 更新成功！".into());
+                        return Ok(());
+                    }
+                    send_log("WinGet 更新回退，改用官网安装包...".into());
+                }
+
                 let raw_url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe";
                 send_log("正在解析 Git for Windows 国内加速地址...".into());
                 let download_url = find_fastest_github_url(&client, raw_url).await;
@@ -125,7 +159,28 @@ impl InstallerEngine {
             }
 
             "claudecode" => {
-                send_log("使用国内官方 npmmirror 镜像高速安装 Claude Code...".into());
+                // 如果本地已存在 claude 命令，优先尝试原生 `claude update` 自升级
+                let (has_claude, _, _) = crate::detector::Detector::check_command("claude.exe", "--version");
+                if has_claude {
+                    send_log("检测到本地已安装 Claude Code，执行官方原生更新命令 (`claude update`)...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    let update_res = NpmInstaller::run_cli_command("claude", &["update"], proxy_ref, move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await;
+
+                    if update_res.is_ok() {
+                        send_log("Claude Code 官方自升级完成！".into());
+                        return Ok(());
+                    }
+                    send_log("原生自升级未成功，尝试通过国内 npmmirror 镜像更新...".into());
+                } else {
+                    send_log("使用国内官方 npmmirror 镜像高速安装 Claude Code...".into());
+                }
+
                 let tx_log = event_sender.clone();
                 let sid = software_id.to_string();
                 NpmInstaller::install_global("@anthropic-ai/claude-code", proxy_ref, move |line| {
@@ -153,7 +208,27 @@ impl InstallerEngine {
             }
 
             "pi" => {
-                send_log("从 npmmirror 镜像安装 Earendil Works Pi Agent...".into());
+                let (has_pi, _, _) = crate::detector::Detector::check_command("pi.exe", "--version");
+                if has_pi {
+                    send_log("检测到本地已安装 Pi，优先使用官方原生更新命令 (`pi update`)...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    let update_res = NpmInstaller::run_cli_command("pi", &["update"], proxy_ref, move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await;
+
+                    if update_res.is_ok() {
+                        send_log("Pi Agent 官方原生更新成功！".into());
+                        return Ok(());
+                    }
+                    send_log("官方原生更新未成功，回退到国内 npmmirror 镜像重新安装...".into());
+                } else {
+                    send_log("从 npmmirror 镜像安装 Earendil Works Pi Agent...".into());
+                }
+
                 let tx_log = event_sender.clone();
                 let sid = software_id.to_string();
                 NpmInstaller::install_global("@earendil-works/pi", proxy_ref, move |line| {
@@ -167,7 +242,27 @@ impl InstallerEngine {
             }
 
             "oh-my-pi" => {
-                send_log("安装 oh-my-pi (omp) 编码智能体...".into());
+                let (has_omp, _, _) = crate::detector::Detector::check_command("omp.exe", "--version");
+                if has_omp {
+                    send_log("检测到本地已安装 omp，使用官方原生更新命令 (`omp update`)...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    let update_res = NpmInstaller::run_cli_command("omp", &["update"], proxy_ref, move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await;
+
+                    if update_res.is_ok() {
+                        send_log("oh-my-pi (omp) 官方原生更新成功！".into());
+                        return Ok(());
+                    }
+                    send_log("omp update 退出，回退到国内镜像安装...".into());
+                } else {
+                    send_log("安装 oh-my-pi (omp) 编码智能体...".into());
+                }
+
                 let tx_log = event_sender.clone();
                 let sid = software_id.to_string();
                 NpmInstaller::install_global("@oh-my-pi/pi-coding-agent", proxy_ref, move |line| {
@@ -181,10 +276,31 @@ impl InstallerEngine {
             }
 
             "opencode" => {
-                send_log("安装 OpenCode 编码智能体...".into());
+                let (has_opencode, _, _) = crate::detector::Detector::check_command("opencode.exe", "--version");
+                if has_opencode {
+                    send_log("检测到本地已安装 OpenCode，优先执行官方命令 (`opencode upgrade`)...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    let update_res = NpmInstaller::run_cli_command("opencode", &["upgrade"], proxy_ref, move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await;
+
+                    if update_res.is_ok() {
+                        send_log("OpenCode 官方升级完成！".into());
+                        return Ok(());
+                    }
+                    send_log("官方 upgrade 回退，通过国内 npmmirror 镜像更新...".into());
+                } else {
+                    send_log("通过国内 npmmirror 镜像安装 OpenCode...".into());
+                }
+
                 let tx_log = event_sender.clone();
                 let sid = software_id.to_string();
-                NpmInstaller::install_global("opencode-ai", proxy_ref, move |line| {
+                // 探测当前使用的 npm 全局包名：优先 @opencode/cli，其次 opencode-ai
+                NpmInstaller::install_global("@opencode/cli", proxy_ref, move |line| {
                     let _ = tx_log.send(AppEvent::Log {
                         target_id: sid.clone(),
                         message: line,

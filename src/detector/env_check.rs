@@ -18,13 +18,13 @@ pub struct SoftwareStatus {
     pub repo_url: String,
     pub installed: bool,
     pub version: Option<String>,
+    pub install_method: Option<String>, // "winget", "npm", "native_cli", "standalone", etc.
 }
 
 pub struct Detector;
 
 impl Detector {
-    /// 实时检测命令是否存在并获取版本号（纯内存执行，零注册表污染）
-    pub fn check_command(cmd: &str, version_arg: &str) -> (bool, Option<String>) {
+    pub fn check_command(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
         // 去除可能的 .exe 后缀用于通用探测
         let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
 
@@ -39,18 +39,28 @@ impl Detector {
         #[cfg(windows)]
         where2.creation_flags(CREATE_NO_WINDOW);
 
-        let exists = where1
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false)
-            || where2
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false);
+        let out1 = where1.output().ok();
+        let out2 = where2.output().ok();
+
+        let exists = out1.as_ref().map(|o| o.status.success()).unwrap_or(false)
+            || out2.as_ref().map(|o| o.status.success()).unwrap_or(false);
 
         if !exists {
-            return (false, None);
+            return (false, None, None);
         }
+
+        let cmd_path = out1
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).to_string();
+                s.lines().next().map(|l| l.trim().to_string())
+            })
+            .or_else(|| {
+                out2.and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).to_string();
+                    s.lines().next().map(|l| l.trim().to_string())
+                })
+            });
+
         // 2. 尝试获取版本信息：优先直接执行，失败则回退到 cmd /c（支持 npm 全局安装的 .cmd / .bat 脚本）
         let try_run = |use_shell: bool| -> Option<String> {
             let mut command = if use_shell {
@@ -85,12 +95,12 @@ impl Detector {
         };
 
         let version = try_run(false).or_else(|| try_run(true));
-        (true, version)
+        (true, version, cmd_path)
     }
 
     /// 检测 Windows Terminal 状态与版本
     /// 避免直接运行 `wt.exe -v` / `--version` 触发 GUI 弹窗
-    pub fn check_windows_terminal() -> (bool, Option<String>) {
+    pub fn check_windows_terminal() -> (bool, Option<String>, Option<String>) {
         #[cfg(windows)]
         {
             // 优先从注册表 App Paths 读取安装路径并提取版本号
@@ -111,7 +121,7 @@ impl Detector {
             };
 
             if let Some(ver) = query_reg(HKEY_CURRENT_USER).or_else(|| query_reg(HKEY_LOCAL_MACHINE)) {
-                return (true, Some(ver));
+                return (true, Some(ver), Some("winget/msix".to_string()));
             }
         }
 
@@ -122,7 +132,21 @@ impl Detector {
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         let ok = cmd.output().map(|o| o.status.success()).unwrap_or(false);
-        (ok, if ok { Some("已安装".to_string()) } else { None })
+        (ok, if ok { Some("已安装".to_string()) } else { None }, if ok { Some("winget/msix".to_string()) } else { None })
+    }
+
+    /// 分析可执行文件路径，判定其安装途径
+    pub fn infer_install_method(path_opt: Option<&str>, default_method: &str) -> Option<String> {
+        let p = path_opt?.to_lowercase();
+        if p.contains("windowsapps") {
+            Some("winget".to_string())
+        } else if p.contains("node_modules") || p.contains("npm") || p.contains("nvm") {
+            Some("npm".to_string())
+        } else if p.contains(".local\\bin") || p.contains("appdata\\local\\omp") || p.contains("appdata\\local\\pi") {
+            Some("native_cli".to_string())
+        } else {
+            Some(default_method.to_string())
+        }
     }
 
     /// 综合全量实时检测所有环境与 Agent 状态
@@ -130,7 +154,7 @@ impl Detector {
         let mut list = Vec::new();
 
         // 1. 基础开发环境 (Prerequisites)
-        let (wt_ok, wt_ver) = Self::check_windows_terminal();
+        let (wt_ok, wt_ver, wt_method) = Self::check_windows_terminal();
         list.push(SoftwareStatus {
             id: "windows_terminal".into(),
             name: "Windows Terminal".into(),
@@ -139,8 +163,14 @@ impl Detector {
             repo_url: "https://github.com/microsoft/terminal".into(),
             installed: wt_ok,
             version: wt_ver,
+            install_method: wt_method,
         });
-        let (pwsh_ok, pwsh_ver) = Self::check_command("pwsh.exe", "--version");
+        let (pwsh_ok, pwsh_ver, pwsh_path) = Self::check_command("pwsh.exe", "--version");
+        let pwsh_method = if pwsh_ok {
+            Self::infer_install_method(pwsh_path.as_deref(), "msi")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "powershell7".into(),
             name: "PowerShell 7".into(),
@@ -149,9 +179,15 @@ impl Detector {
             repo_url: "https://github.com/PowerShell/PowerShell".into(),
             installed: pwsh_ok,
             version: pwsh_ver,
+            install_method: pwsh_method,
         });
 
-        let (node_ok, node_ver) = Self::check_command("node.exe", "--version");
+        let (node_ok, node_ver, node_path) = Self::check_command("node.exe", "--version");
+        let node_method = if node_ok {
+            Self::infer_install_method(node_path.as_deref(), "msi")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "nodejs".into(),
             name: "Node.js (LTS)".into(),
@@ -160,9 +196,15 @@ impl Detector {
             repo_url: "https://nodejs.org".into(),
             installed: node_ok,
             version: node_ver,
+            install_method: node_method,
         });
 
-        let (git_ok, git_ver) = Self::check_command("git.exe", "--version");
+        let (git_ok, git_ver, git_path) = Self::check_command("git.exe", "--version");
+        let git_method = if git_ok {
+            Self::infer_install_method(git_path.as_deref(), "installer")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "git".into(),
             name: "Git".into(),
@@ -171,10 +213,16 @@ impl Detector {
             repo_url: "https://git-scm.com".into(),
             installed: git_ok,
             version: git_ver,
+            install_method: git_method,
         });
 
         // 2. AI Coding Agents
-        let (omp_ok, omp_ver) = Self::check_command("omp.exe", "--version");
+        let (omp_ok, omp_ver, omp_path) = Self::check_command("omp.exe", "--version");
+        let omp_method = if omp_ok {
+            Self::infer_install_method(omp_path.as_deref(), "native_cli")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "oh-my-pi".into(),
             name: "oh-my-pi (omp)".into(),
@@ -183,9 +231,15 @@ impl Detector {
             repo_url: "https://github.com/can1357/oh-my-pi".into(),
             installed: omp_ok,
             version: omp_ver,
+            install_method: omp_method,
         });
 
-        let (claude_ok, claude_ver) = Self::check_command("claude.exe", "--version");
+        let (claude_ok, claude_ver, claude_path) = Self::check_command("claude.exe", "--version");
+        let claude_method = if claude_ok {
+            Self::infer_install_method(claude_path.as_deref(), "native_cli")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "claudecode".into(),
             name: "Claude Code".into(),
@@ -194,9 +248,15 @@ impl Detector {
             repo_url: "https://github.com/anthropics/claude-code".into(),
             installed: claude_ok,
             version: claude_ver,
+            install_method: claude_method,
         });
 
-        let (codex_ok, codex_ver) = Self::check_command("codex.exe", "--version");
+        let (codex_ok, codex_ver, codex_path) = Self::check_command("codex.exe", "--version");
+        let codex_method = if codex_ok {
+            Self::infer_install_method(codex_path.as_deref(), "npm")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "codex".into(),
             name: "OpenAI Codex".into(),
@@ -205,9 +265,15 @@ impl Detector {
             repo_url: "https://github.com/openai/codex".into(),
             installed: codex_ok,
             version: codex_ver,
+            install_method: codex_method,
         });
 
-        let (pi_ok, pi_ver) = Self::check_command("pi.exe", "--version");
+        let (pi_ok, pi_ver, pi_path) = Self::check_command("pi.exe", "--version");
+        let pi_method = if pi_ok {
+            Self::infer_install_method(pi_path.as_deref(), "native_cli")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "pi".into(),
             name: "Pi Agent".into(),
@@ -216,9 +282,15 @@ impl Detector {
             repo_url: "https://github.com/earendil-works/pi".into(),
             installed: pi_ok,
             version: pi_ver,
+            install_method: pi_method,
         });
 
-        let (opencode_ok, opencode_ver) = Self::check_command("opencode.exe", "--version");
+        let (opencode_ok, opencode_ver, opencode_path) = Self::check_command("opencode.exe", "--version");
+        let opencode_method = if opencode_ok {
+            Self::infer_install_method(opencode_path.as_deref(), "npm")
+        } else {
+            None
+        };
         list.push(SoftwareStatus {
             id: "opencode".into(),
             name: "OpenCode".into(),
@@ -227,8 +299,8 @@ impl Detector {
             repo_url: "https://github.com/anomalyco/opencode".into(),
             installed: opencode_ok,
             version: opencode_ver,
+            install_method: opencode_method,
         });
-
         list
     }
 }

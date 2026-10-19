@@ -129,13 +129,16 @@ function renderAll() {
     card.className = "card";
 
     const badgeClass = item.installed ? "badge-installed" : "badge-missing";
-    const badgeText = item.installed
+    let badgeText = item.installed
       ? `已就绪 ${item.version ? "· " + item.version : ""}`
       : "未安装";
 
-    const btnClass = item.installed ? "btn-install secondary" : "btn-install";
-    const btnText = item.installed ? "重新安装" : "一键安装";
+    if (item.installed && item.install_method) {
+      badgeText += ` (${item.install_method})`;
+    }
 
+    const btnClass = item.installed ? "btn-install secondary" : "btn-install";
+    const btnText = item.installed ? "检查更新 / 升级" : "一键安装";
     card.innerHTML = `
       <div class="card-header">
         <div class="card-title-wrap">
