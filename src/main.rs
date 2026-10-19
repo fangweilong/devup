@@ -1,5 +1,6 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
+mod config;
 mod detector;
 mod installer;
 mod network;
@@ -20,9 +21,9 @@ use tao::{
 use tokio::sync::mpsc::unbounded_channel;
 use wry::{http::Request, WebViewBuilder};
 
+use config::{AppConfig, ProxyConfig};
 use detector::Detector;
 use installer::InstallerEngine;
-use network::proxy::detect_system_proxy;
 use state::{AppEvent, IpcCommand};
 use updater::SelfUpdater;
 
@@ -78,8 +79,11 @@ fn main() -> anyhow::Result<()> {
 
     let html_content = build_inlined_html();
 
-    // 内存中记录当前系统代理
-    let active_proxy = Arc::new(std::sync::Mutex::new(detect_system_proxy()));
+    // 加载持久化配置，计算初始生效代理（自定义 / 直连 / 跟随系统嗅探）
+    let app_config = Arc::new(std::sync::Mutex::new(AppConfig::load()));
+    let initial_proxy = app_config.lock().unwrap().effective_proxy();
+    // 内存中记录当前实际生效的代理，安装/下载/自升级链路统一读取此值
+    let active_proxy = Arc::new(std::sync::Mutex::new(initial_proxy));
 
     let (tokio_event_tx, mut tokio_event_rx) = unbounded_channel::<AppEvent>();
 
@@ -94,6 +98,7 @@ fn main() -> anyhow::Result<()> {
     let rt_for_ipc = rt.clone();
     let tx_for_ipc = tokio_event_tx.clone();
     let active_proxy_for_ipc = active_proxy.clone();
+    let config_for_ipc = app_config.clone();
 
     // 3. 构建 WebView
     let webview = WebViewBuilder::new()
@@ -104,10 +109,23 @@ fn main() -> anyhow::Result<()> {
             match cmd {
                 Ok(IpcCommand::Refresh) => {
                     let tx = tx_for_ipc.clone();
-                    let current_proxy = active_proxy_for_ipc.lock().unwrap().clone();
+                    let config_for_refresh = config_for_ipc.clone();
+                    let active_for_refresh = active_proxy_for_ipc.clone();
                     rt_for_ipc.spawn_blocking(move || {
-                        let _ = tx.send(AppEvent::ProxyDetected {
-                            proxy: current_proxy,
+                        // system 模式重新嗅探；custom/direct 按配置重算
+                        let (proxy, mode, url) = {
+                            let cfg = config_for_refresh.lock().unwrap();
+                            (
+                                cfg.effective_proxy(),
+                                cfg.proxy.mode.clone(),
+                                cfg.proxy.url.clone(),
+                            )
+                        };
+                        *active_for_refresh.lock().unwrap() = proxy.clone();
+                        let _ = tx.send(AppEvent::ProxyStatus {
+                            proxy,
+                            mode,
+                            url,
                         });
                         let statuses = Detector::detect_all();
                         let _ = tx.send(AppEvent::StatusList(statuses));
@@ -136,9 +154,18 @@ fn main() -> anyhow::Result<()> {
                         }
                     });
                 }
-                Ok(IpcCommand::SetCustomProxy { proxy }) => {
+                Ok(IpcCommand::SetProxy { mode, url }) => {
+                    let (proxy, mode, url) = {
+                        let mut cfg = config_for_ipc.lock().unwrap();
+                        cfg.proxy = ProxyConfig { mode, url };
+                        if let Err(e) = cfg.save() {
+                            eprintln!("持久化代理配置失败: {:#}", e);
+                        }
+                        let p = cfg.effective_proxy();
+                        (p, cfg.proxy.mode.clone(), cfg.proxy.url.clone())
+                    };
                     *active_proxy_for_ipc.lock().unwrap() = proxy.clone();
-                    let _ = tx_for_ipc.send(AppEvent::ProxyDetected { proxy });
+                    let _ = tx_for_ipc.send(AppEvent::ProxyStatus { proxy, mode, url });
                 }
                 Ok(IpcCommand::OpenUrl { url }) => {
                     platform::open_url(&url);
@@ -192,8 +219,14 @@ fn main() -> anyhow::Result<()> {
     // 4. 首次加载时，触发一次初始状态感知
     {
         let initial_proxy = active_proxy.lock().unwrap().clone();
-        let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::ProxyDetected {
+        let (mode, url) = {
+            let cfg = app_config.lock().unwrap();
+            (cfg.proxy.mode.clone(), cfg.proxy.url.clone())
+        };
+        let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::ProxyStatus {
             proxy: initial_proxy,
+            mode,
+            url,
         }));
         let statuses = Detector::detect_all();
         let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::StatusList(statuses)));

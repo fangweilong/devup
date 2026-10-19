@@ -2,6 +2,8 @@
 let state = {
   softwares: [],
   proxy: null,
+  proxyMode: "system",
+  proxyUrl: null,
   activeTaskId: null,
   activeFilter: "all",
   pendingUninstallId: null,
@@ -28,8 +30,10 @@ window.onEvent = function (event) {
       renderAll();
       break;
 
-    case "ProxyDetected":
+    case "ProxyStatus":
       state.proxy = event.data.proxy;
+      state.proxyMode = event.data.mode || "system";
+      state.proxyUrl = event.data.url;
       updateProxyBadge();
       break;
 
@@ -79,13 +83,65 @@ window.onEvent = function (event) {
 function updateProxyBadge() {
   const badge = document.getElementById("proxy-badge");
   const text = document.getElementById("proxy-text");
-  if (state.proxy) {
+  badge.classList.toggle("pill-custom", state.proxyMode === "custom");
+  badge.classList.toggle("pill-direct", state.proxyMode === "direct");
+
+  if (state.proxyMode === "custom") {
+    text.textContent = state.proxy ? `自定义代理: ${state.proxy}` : "自定义代理未生效";
+    badge.title = "正在使用配置的固定代理地址（已持久化），点击可修改";
+  } else if (state.proxyMode === "direct") {
+    text.textContent = "直连模式 (禁用代理)";
+    badge.title = "所有请求均直连发出，不使用任何代理，点击可修改";
+  } else if (state.proxy) {
     text.textContent = `系统代理: ${state.proxy}`;
-    badge.title = "已自动感知并配置系统代理，网络请求与 npm 将自动透传";
+    badge.title = "已自动感知系统代理，网络请求与 npm 将自动透传，点击可配置";
   } else {
     text.textContent = "国内多源加速集群 (免翻)";
-    badge.title = "正在使用国内 GitHub/npm 高速镜像加速下载";
+    badge.title = "正在使用国内 GitHub/npm 高速镜像加速下载，点击可配置代理";
   }
+}
+
+// ---- 代理配置弹窗 ----
+function getSelectedProxyMode() {
+  const checked = document.querySelector('input[name="proxy-mode"]:checked');
+  return checked ? checked.value : "system";
+}
+
+function syncProxyModalUi() {
+  const isCustom = getSelectedProxyMode() === "custom";
+  document.getElementById("proxy-url-wrap").style.display = isCustom ? "block" : "none";
+  document.querySelectorAll(".proxy-mode-option").forEach((opt) => {
+    const input = opt.querySelector('input[name="proxy-mode"]');
+    opt.classList.toggle("selected", input.checked);
+  });
+}
+
+function openProxyModal() {
+  document.querySelectorAll('input[name="proxy-mode"]').forEach((r) => {
+    r.checked = r.value === state.proxyMode;
+  });
+  document.getElementById("proxy-url-input").value = state.proxyUrl || "";
+  syncProxyModalUi();
+  document.getElementById("proxy-modal").classList.add("show");
+  if (state.proxyMode === "custom") {
+    document.getElementById("proxy-url-input").focus();
+  }
+}
+
+function closeProxyModal() {
+  document.getElementById("proxy-modal").classList.remove("show");
+}
+
+function saveProxyConfig() {
+  const mode = getSelectedProxyMode();
+  const url = document.getElementById("proxy-url-input").value.trim();
+  if (mode === "custom" && !url) {
+    appendLog("⚠️ 请填写代理地址，格式如 127.0.0.1:7890 或 http://host:port");
+    return;
+  }
+  closeProxyModal();
+  postCommand("SetProxy", { mode, url: mode === "custom" ? url : null });
+  appendLog(`🌐 代理模式已更新: ${mode === "system" ? "跟随系统" : mode === "custom" ? `自定义 (${url})` : "直连"}，已持久化到本地配置。`);
 }
 
 function appendLog(line) {
@@ -372,6 +428,22 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-refresh").addEventListener("click", () => {
     appendLog("正在重新检测本地环境与网络配置...");
     postCommand("Refresh");
+  });
+
+  // 代理徽章点击 -> 打开配置弹窗
+  document.getElementById("proxy-badge").addEventListener("click", openProxyModal);
+  document.querySelectorAll('input[name="proxy-mode"]').forEach((r) => {
+    r.addEventListener("change", syncProxyModalUi);
+  });
+  const proxyUrlInput = document.getElementById("proxy-url-input");
+  proxyUrlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveProxyConfig();
+  });
+  document.getElementById("proxy-btn-cancel").addEventListener("click", closeProxyModal);
+  document.getElementById("proxy-btn-save").addEventListener("click", saveProxyConfig);
+  const proxyModal = document.getElementById("proxy-modal");
+  proxyModal.addEventListener("click", (e) => {
+    if (e.target.id === "proxy-modal") closeProxyModal();
   });
   // 检查更新按钮
   const btnCheckUpdate = document.getElementById("btn-check-update");

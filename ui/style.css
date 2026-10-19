@@ -171,6 +171,120 @@ header {
   color: var(--accent);
   border-radius: 999px;
   font-family: var(--font-mono);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s;
+}
+
+.proxy-pill:hover {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.proxy-pill .pill-edit-icon {
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.proxy-pill:hover .pill-edit-icon {
+  opacity: 1;
+}
+
+.proxy-pill.pill-direct {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-muted);
+}
+
+.proxy-pill.pill-direct:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: var(--text-main);
+}
+
+.proxy-pill.pill-direct .pulse-dot {
+  background-color: var(--text-muted);
+  box-shadow: none;
+  animation: none;
+}
+
+/* 代理配置弹窗 */
+.proxy-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.proxy-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.proxy-mode-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.proxy-mode-option.selected {
+  border-color: rgba(56, 189, 248, 0.5);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.proxy-mode-option input[type="radio"] {
+  accent-color: var(--accent);
+  margin-top: 2px;
+}
+
+.proxy-mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proxy-mode-text strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.proxy-mode-text em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.proxy-url-wrap {
+  margin-top: 12px;
+}
+
+.proxy-url-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.proxy-url-input:focus {
+  border-color: rgba(56, 189, 248, 0.5);
+}
+
+.proxy-url-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.65;
 }
 
 .pulse-dot {

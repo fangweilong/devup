@@ -1,3 +1,17 @@
+/// 规范化代理地址为完整 URL：无协议前缀时补 `http://`，
+/// 已有 http/https/socks5 前缀则原样保留（reqwest 的 `Proxy::all` 均支持）
+pub fn normalize_proxy_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if ["http://", "https://", "socks5://", "socks5h://"]
+        .iter()
+        .any(|p| trimmed.starts_with(p))
+    {
+        trimmed.to_string()
+    } else {
+        format!("http://{}", trimmed)
+    }
+}
+
 /// 解析 Windows 注册表 `ProxyServer` 字符串值
 /// 格式可能为：
 /// 1. "127.0.0.1:7890"
@@ -20,11 +34,7 @@ fn parse_windows_proxy_server(server: &str) -> Option<String> {
         return None;
     }
 
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        Some(trimmed.to_string())
-    } else {
-        Some(format!("http://{}", trimmed))
-    }
+    Some(normalize_proxy_url(trimmed))
 }
 
 /// 检测当前 Windows 系统是否启用了系统代理（如 Clash, v2rayN, Sing-box 等开启的系统代理）
@@ -109,11 +119,7 @@ fn env_proxy_fallback() -> Option<String> {
         if let Ok(v) = std::env::var(key) {
             let v = v.trim();
             if !v.is_empty() {
-                return Some(if v.starts_with("http://") || v.starts_with("https://") {
-                    v.to_string()
-                } else {
-                    format!("http://{}", v)
-                });
+                return Some(normalize_proxy_url(v));
             }
         }
     }
@@ -123,6 +129,16 @@ fn env_proxy_fallback() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_proxy_url() {
+        assert_eq!(normalize_proxy_url("127.0.0.1:7890"), "http://127.0.0.1:7890");
+        assert_eq!(normalize_proxy_url(" https://a.b:8443 "), "https://a.b:8443");
+        assert_eq!(
+            normalize_proxy_url("socks5://user:pass@host:1080"),
+            "socks5://user:pass@host:1080"
+        );
+    }
 
     #[test]
     fn test_parse_windows_proxy_server() {

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::config::ProxyMode;
 use crate::detector::SoftwareStatus;
 use crate::network::downloader::DownloadProgress;
 
@@ -8,7 +9,11 @@ pub enum IpcCommand {
     Refresh,
     Install { target_id: String },
     Uninstall { target_id: String },
-    SetCustomProxy { proxy: Option<String> },
+    /// 设置代理模式与自定义地址，并持久化到本地配置文件
+    SetProxy {
+        mode: ProxyMode,
+        url: Option<String>,
+    },
     OpenUrl { url: String },
     CheckUpdate,
     PerformSelfUpdate { download_url: String },
@@ -18,7 +23,12 @@ pub enum IpcCommand {
 #[serde(tag = "type", content = "data")]
 pub enum AppEvent {
     StatusList(Vec<SoftwareStatus>),
-    ProxyDetected { proxy: Option<String> },
+    /// 当前代理配置与实际生效地址
+    ProxyStatus {
+        proxy: Option<String>,
+        mode: ProxyMode,
+        url: Option<String>,
+    },
     Log { target_id: String, message: String },
     Progress(DownloadProgress),
     InstallSuccess { target_id: String },
