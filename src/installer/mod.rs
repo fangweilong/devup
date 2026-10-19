@@ -91,19 +91,20 @@ impl InstallerEngine {
     pub async fn install_target(
         software_id: &str,
         proxy_url: Option<String>,
+        mirror_config: crate::config::MirrorConfig,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
         #[cfg(windows)]
         {
-            Self::install_target_windows(software_id, proxy_url, &event_sender).await?;
+            Self::install_target_windows(software_id, proxy_url, mirror_config, &event_sender).await?;
         }
         #[cfg(target_os = "macos")]
         {
-            Self::install_target_macos(software_id, proxy_url, &event_sender).await?;
+            Self::install_target_macos(software_id, proxy_url, mirror_config, &event_sender).await?;
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
-            let _ = (&software_id, &proxy_url, &event_sender);
+            let _ = (&software_id, &proxy_url, &mirror_config, &event_sender);
             bail!("当前平台暂不支持自动安装: {}", software_id);
         }
         let _ = event_sender.send(AppEvent::InstallSuccess {
@@ -151,6 +152,7 @@ impl InstallerEngine {
     async fn install_agent(
         software_id: &str,
         proxy_ref: Option<&str>,
+        npm_registry: &str,
         event_sender: &UnboundedSender<AppEvent>,
     ) -> Result<()> {
         let Some(spec) = agent_spec(software_id) else {
@@ -178,10 +180,10 @@ impl InstallerEngine {
         }
 
         log(format!(
-            "使用国内 npmmirror 镜像安装 {} ({})...",
-            spec.label, spec.npm_pkg
+            "使用 npm 镜像 ({}) 安装 {} ({})...",
+            npm_registry, spec.label, spec.npm_pkg
         ));
-        NpmInstaller::install_global(spec.npm_pkg, proxy_ref, log.clone()).await?;
+        NpmInstaller::install_global(spec.npm_pkg, proxy_ref, npm_registry, log.clone()).await?;
         log(spec.done_msg.to_string());
         Ok(())
     }
@@ -274,6 +276,7 @@ impl InstallerEngine {
     async fn install_target_windows(
         software_id: &str,
         proxy_url: Option<String>,
+        mirror_config: crate::config::MirrorConfig,
         event_sender: &UnboundedSender<AppEvent>,
     ) -> Result<()> {
         let proxy_ref = proxy_url.as_deref();
@@ -288,9 +291,9 @@ impl InstallerEngine {
         match software_id {
             "powershell7" => {
                 let raw_url = "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi";
-                log("正在测试国内 GitHub 加速镜像并获取下载通道...".into());
-                let download_url = find_fastest_github_url(&client, raw_url).await;
-                log(format!("选定最优加速链接: {}", download_url));
+                log(format!("正在根据配置解析 GitHub 下载源 (模式: {})...", mirror_config.github_mode));
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
+                log(format!("选定加速下载链接: {}", download_url));
 
                 let dest = temp_dir.join("PowerShell-7.4.6-win-x64.msi");
                 let tx_progress = event_sender.clone();
@@ -316,10 +319,10 @@ impl InstallerEngine {
                     log("WinGet 渠道更新失败或已是最新，回退到国内 GitHub 离线包安装...".into());
                 }
 
-                let raw_url = "https://github.com/microsoft/terminal/releases/download/v1.21.3231.0/Microsoft.WindowsTerminal_Win10_1.21.3231.0_8wekyb3d8bbwe.msixbundle";
-                log("正在连接国内 GitHub 加速节点...".into());
-                let download_url = find_fastest_github_url(&client, raw_url).await;
-                log(format!("选定最优加速链接: {}", download_url));
+                let raw_url = "https://github.com/microsoft/terminal/releases/download/v1.25.2733.0/Microsoft.WindowsTerminal_1.25.2733.0_8wekyb3d8bbwe.msixbundle";
+                log(format!("正在根据配置解析 GitHub 下载源 (模式: {})...", mirror_config.github_mode));
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
+                log(format!("选定加速下载链接: {}", download_url));
 
                 let dest = temp_dir.join("WindowsTerminal.msixbundle");
                 let tx_progress = event_sender.clone();
@@ -363,8 +366,8 @@ impl InstallerEngine {
                 }
 
                 let raw_url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe";
-                log("正在解析 Git for Windows 国内加速地址...".into());
-                let download_url = find_fastest_github_url(&client, raw_url).await;
+                log(format!("正在根据配置解析 Git for Windows 国内加速地址 (模式: {})...", mirror_config.github_mode));
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
 
                 let dest = temp_dir.join("Git-Installer.exe");
                 let tx_progress = event_sender.clone();
@@ -395,7 +398,7 @@ impl InstallerEngine {
             }
 
             "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
-                Self::install_agent(software_id, proxy_ref, event_sender).await?;
+                Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
             other => {
@@ -510,6 +513,7 @@ impl InstallerEngine {
     async fn install_target_macos(
         software_id: &str,
         proxy_url: Option<String>,
+        mirror_config: crate::config::MirrorConfig,
         event_sender: &UnboundedSender<AppEvent>,
     ) -> Result<()> {
         let proxy_ref = proxy_url.as_deref();
@@ -578,7 +582,7 @@ impl InstallerEngine {
             }
 
             "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
-                Self::install_agent(software_id, proxy_ref, event_sender).await?;
+                Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
             other => {

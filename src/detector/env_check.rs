@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
@@ -9,6 +11,10 @@ use winreg::RegKey;
 
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 全局组件最新版本内存缓存
+static VERSION_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SoftwareStatus {
     pub id: String,
@@ -104,16 +110,19 @@ impl Detector {
     /// Windows: where.exe 探测 + cmd /c 兜底执行（支持 npm 全局 .cmd shim）
     #[cfg(windows)]
     fn check_command_windows(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
+        let child_path = crate::platform::child_path();
         let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
 
         // 1. 先用 where.exe 探测（同时支持 .exe, .cmd, .bat 等扩展名）
         let mut where1 = Command::new("where.exe");
         where1.arg(base_cmd);
+        where1.env("PATH", &child_path);
         #[cfg(windows)]
         where1.creation_flags(CREATE_NO_WINDOW);
 
         let mut where2 = Command::new("where.exe");
         where2.arg(cmd);
+        where2.env("PATH", &child_path);
         #[cfg(windows)]
         where2.creation_flags(CREATE_NO_WINDOW);
 
@@ -151,6 +160,7 @@ impl Detector {
                 c
             };
 
+            command.env("PATH", &child_path);
             #[cfg(windows)]
             command.creation_flags(CREATE_NO_WINDOW);
 
@@ -206,8 +216,10 @@ impl Detector {
         }
 
         // 回退检查 where.exe 是否能找到 wt
+        let child_path = crate::platform::child_path();
         let mut cmd = Command::new("where.exe");
         cmd.arg("wt");
+        cmd.env("PATH", &child_path);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -246,6 +258,153 @@ impl Detector {
         }
     }
 
+    /// 查询指定组件已记录的最新版本（优先缓存，缺失回退内置基线）
+    pub fn get_latest_version(id: &str) -> Option<String> {
+        if let Ok(guard) = VERSION_CACHE.lock() {
+            if let Some(v) = guard.get(id) {
+                return Some(v.clone());
+            }
+        }
+        Self::default_latest_version(id).map(|s| s.to_string())
+    }
+
+    /// 设置指定组件的最新版本到内存缓存
+    pub fn set_latest_version(id: &str, ver: String) {
+        if let Ok(mut guard) = VERSION_CACHE.lock() {
+            guard.insert(id.to_string(), ver);
+        }
+    }
+
+    /// 内置兜底基线版本（当网络不可达或首次启动时使用）
+    pub fn default_latest_version(id: &str) -> Option<&'static str> {
+        match id {
+            "powershell7" => Some("v7.4.7"),
+            "windows_terminal" => Some("v1.25.2733.0"),
+            "nodejs" => Some("v24.21.0"),
+            "git" => Some("v2.56.0"),
+            "homebrew" => Some("4.4.20"),
+            "claudecode" => Some("v2.1.303"),
+            "codex" => Some("v0.163.0"),
+            "pi" => Some("v1.3.0"),
+            "oh-my-pi" => Some("v18.12.2"),
+            "opencode" => Some("v2.0.32"),
+            _ => None,
+        }
+    }
+
+    /// 联网并发拉取所有组件的官方最新版本，并更新内存缓存
+    /// 返回是否有任何组件的版本得到了更新
+    pub async fn fetch_latest_versions_online(
+        client: &reqwest::Client,
+        npm_registry: &str,
+    ) -> bool {
+        let mut updated = false;
+        let clean_registry = npm_registry.trim_end_matches('/');
+
+        let mut futs = Vec::new();
+
+        // 1. npm Agent 最新版本查询
+        let npm_tasks = [
+            ("claudecode", "@anthropic-ai/claude-code"),
+            ("codex", "@openai/codex"),
+            ("oh-my-pi", "@oh-my-pi/pi-coding-agent"),
+            ("opencode", "@opencode/cli"),
+        ];
+
+        for (id, pkg) in npm_tasks {
+            let url = format!("{}/{}/latest", clean_registry, pkg);
+            let client_c = client.clone();
+            futs.push(tokio::spawn(async move {
+                let res = client_c
+                    .get(&url)
+                    .timeout(std::time::Duration::from_millis(3500))
+                    .send()
+                    .await;
+                if let Ok(resp) = res {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(ver) = json.get("version").and_then(|v| v.as_str()) {
+                            let formatted = if ver.starts_with('v') || ver.starts_with('V') {
+                                ver.to_string()
+                            } else {
+                                format!("v{}", ver)
+                            };
+                            return Some((id, formatted));
+                        }
+                    }
+                }
+                None
+            }));
+        }
+
+        // 2. Node.js LTS 版本查询（使用 nodejs 阿里镜像源 index.json）
+        {
+            let client_c = client.clone();
+            futs.push(tokio::spawn(async move {
+                let url = "https://npmmirror.com/mirrors/node/index.json";
+                let res = client_c
+                    .get(url)
+                    .timeout(std::time::Duration::from_millis(3500))
+                    .send()
+                    .await;
+                if let Ok(resp) = res {
+                    if let Ok(list) = resp.json::<Vec<serde_json::Value>>().await {
+                        for item in list {
+                            let is_lts = item.get("lts").and_then(|v| v.as_bool()).unwrap_or(false)
+                                || item.get("lts").and_then(|v| v.as_str()).is_some();
+                            if is_lts {
+                                if let Some(ver) = item.get("version").and_then(|v| v.as_str()) {
+                                    return Some(("nodejs", ver.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }));
+        }
+
+        // 3. GitHub Releases 查询 (PowerShell, Git, Windows Terminal)
+        let gh_repos = [
+            ("powershell7", "PowerShell/PowerShell"),
+            ("git", "git-for-windows/git"),
+            ("windows_terminal", "microsoft/terminal"),
+        ];
+
+        for (id, repo) in gh_repos {
+            let client_c = client.clone();
+            let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+            futs.push(tokio::spawn(async move {
+                let res = client_c
+                    .get(&url)
+                    .header("User-Agent", "DevUp-Client")
+                    .timeout(std::time::Duration::from_millis(3500))
+                    .send()
+                    .await;
+                if let Ok(resp) = res {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
+                            let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
+                            return Some((id, clean_tag.to_string()));
+                        }
+                    }
+                }
+                None
+            }));
+        }
+
+        for f in futs {
+            if let Ok(Some((id, ver))) = f.await {
+                let current = Self::get_latest_version(id);
+                if current.as_deref() != Some(&ver) {
+                    Self::set_latest_version(id, ver);
+                    updated = true;
+                }
+            }
+        }
+
+        updated
+    }
+
     /// 检测一个 CLI 软件并组装状态卡片数据
     fn probe_software(
         id: &str,
@@ -255,7 +414,6 @@ impl Detector {
         repo_url: &str,
         cli: &str,
         default_method: &str,
-        latest_version: Option<&str>,
         default_channel: &str,
     ) -> SoftwareStatus {
         let (ok, ver, path) = Self::check_command(cli, "--version");
@@ -272,7 +430,7 @@ impl Detector {
             repo_url: repo_url.into(),
             installed: ok,
             version: ver,
-            latest_version: latest_version.map(|s| s.to_string()),
+            latest_version: Self::get_latest_version(id),
             install_method: method,
             default_channel: default_channel.into(),
         }
@@ -280,6 +438,9 @@ impl Detector {
 
     /// 综合全量实时检测所有环境与 Agent 状态
     pub fn detect_all() -> Vec<SoftwareStatus> {
+        // 探测前先刷新进程 PATH 环境变量
+        crate::platform::refresh_process_path();
+
         let mut list = Vec::new();
 
         // 1. 基础开发环境 (Prerequisites) —— 按平台差异化
@@ -294,7 +455,7 @@ impl Detector {
                 repo_url: "https://github.com/microsoft/terminal".into(),
                 installed: wt_ok,
                 version: wt_ver,
-                latest_version: Some("v1.25.2733.0".into()),
+                latest_version: Self::get_latest_version("windows_terminal"),
                 install_method: wt_method,
                 default_channel: "WinGet / 微软官方MSIXBundle".into(),
             });
@@ -307,7 +468,6 @@ impl Detector {
                 "https://github.com/PowerShell/PowerShell",
                 "pwsh.exe",
                 "msi",
-                Some("v7.6.7"),
                 "GitHub加速镜像 / WinGet",
             ));
 
@@ -319,7 +479,6 @@ impl Detector {
                 "https://nodejs.org",
                 "node.exe",
                 "msi",
-                Some("v24.21.0"),
                 "阿里npmmirror镜像官方MSI",
             ));
 
@@ -331,7 +490,6 @@ impl Detector {
                 "https://git-scm.com",
                 "git.exe",
                 "installer",
-                Some("v2.56.0"),
                 "GitHub加速镜像 / WinGet",
             ));
         }
@@ -346,7 +504,6 @@ impl Detector {
                 "https://brew.sh",
                 "brew",
                 "script",
-                None,
                 "官方脚本 / 清华镜像加速",
             ));
 
@@ -358,7 +515,6 @@ impl Detector {
                 "https://nodejs.org",
                 "node",
                 "pkg",
-                Some("v24.21.0"),
                 "Homebrew / 阿里npmmirror官方PKG",
             ));
 
@@ -370,7 +526,6 @@ impl Detector {
                 "https://git-scm.com",
                 "git",
                 "system",
-                Some("v2.56.0"),
                 "Homebrew / Xcode 命令行工具",
             ));
         }
@@ -384,7 +539,6 @@ impl Detector {
             "https://github.com/can1357/oh-my-pi",
             "omp",
             "native_cli",
-            Some("v18.12.2"),
             "官方原生更新器 / npmmirror",
         ));
 
@@ -396,7 +550,6 @@ impl Detector {
             "https://github.com/anthropics/claude-code",
             "claude",
             "native_cli",
-            Some("v2.1.303"),
             "Anthropic原生更新器 / npmmirror",
         ));
 
@@ -408,7 +561,6 @@ impl Detector {
             "https://github.com/openai/codex",
             "codex",
             "npm",
-            Some("v0.163.0"),
             "官方npm包 (@openai/codex)",
         ));
 
@@ -420,7 +572,6 @@ impl Detector {
             "https://github.com/earendil-works/pi",
             "pi",
             "native_cli",
-            Some("v1.3.0"),
             "官方原生更新器 / npmmirror",
         ));
 
@@ -432,7 +583,6 @@ impl Detector {
             "https://github.com/anomalyco/opencode",
             "opencode",
             "npm",
-            Some("v2.0.32"),
             "官方CLI自升级 / npmmirror",
         ));
 

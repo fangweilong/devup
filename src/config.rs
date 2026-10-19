@@ -30,10 +30,32 @@ pub struct ProxyConfig {
     pub url: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorConfig {
+    /// GitHub 镜像策略: "auto" (自动测速) | "selected" (指定镜像) | "direct" (直连不走镜像)
+    pub github_mode: String,
+    /// 选定的 GitHub 加速镜像前缀，如 "https://ghproxy.net/"
+    pub github_mirror: String,
+    /// npm 镜像源地址，如 "https://registry.npmmirror.com"
+    pub npm_registry: String,
+}
+
+impl Default for MirrorConfig {
+    fn default() -> Self {
+        Self {
+            github_mode: "auto".to_string(),
+            github_mirror: "https://ghproxy.net/".to_string(),
+            npm_registry: "https://registry.npmmirror.com".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub proxy: ProxyConfig,
+    pub mirror: MirrorConfig,
 }
 
 impl AppConfig {
@@ -143,12 +165,14 @@ mod tests {
         let cfg: AppConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.proxy.mode, ProxyMode::System);
         assert_eq!(cfg.proxy.url, None);
+        assert_eq!(cfg.mirror.github_mode, "auto");
+        assert_eq!(cfg.mirror.npm_registry, "https://registry.npmmirror.com");
 
         let partial: AppConfig =
             serde_json::from_str(r#"{"proxy":{"url":"127.0.0.1:7890"}}"#).unwrap();
         assert_eq!(partial.proxy.mode, ProxyMode::System);
+        assert_eq!(partial.mirror.github_mode, "auto");
     }
-
     #[test]
     fn test_custom_mode_serde() {
         let cfg: AppConfig =
