@@ -2,10 +2,11 @@ name: Build & Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
-
 permissions:
   contents: write
 
@@ -15,9 +16,45 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract & Sync Version Tag
+        id: vars
+        shell: pwsh
+        run: |
+          $cargoVersion = (Get-Content Cargo.toml | Select-String -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          Write-Host "Detected Cargo version: $cargoVersion"
+          $targetTag = "v$cargoVersion"
+          
+          $shouldRelease = $false
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $tag = $env:GITHUB_REF_NAME
+            $shouldRelease = $true
+            Write-Host "Triggered by git tag: $tag"
+          } else {
+            $tagExists = git tag -l $targetTag
+            if (-not $tagExists) {
+              Write-Host "Creating new git tag $targetTag and pushing to repository..."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag $targetTag
+              git push origin $targetTag
+              $shouldRelease = $true
+            } else {
+              Write-Host "Tag $targetTag already exists in repository."
+              if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
+                $shouldRelease = $true
+              }
+            }
+            $tag = $targetTag
+          }
+          
+          echo "TAG_NAME=$tag" >> $env:GITHUB_ENV
+          echo "SHOULD_RELEASE=$shouldRelease" >> $env:GITHUB_ENV
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
@@ -35,8 +72,10 @@ jobs:
           path: devup.exe
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: env.SHOULD_RELEASE == 'true'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: DevUp ${{ env.TAG_NAME }}
           files: devup.exe
           generate_release_notes: true

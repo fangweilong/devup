@@ -5,6 +5,7 @@ let state = {
   activeTaskId: null,
   activeFilter: "all",
   pendingUninstallId: null,
+  updateInfo: null,
 };
 
 function postCommand(cmd, payload = null) {
@@ -55,6 +56,23 @@ window.onEvent = function (event) {
       hideProgress();
       enableAllButtons();
       break;
+
+    case "UpdateAvailable":
+      resetCheckUpdateButton();
+      state.updateInfo = event.data;
+      showUpdateModal(event.data);
+      appendLog(`🎉 发现新版本: v${event.data.latest_version}（当前 v${event.data.current_version}）`);
+      break;
+
+    case "UpdateNotAvailable":
+      resetCheckUpdateButton();
+      appendLog(`ℹ️ 当前已是最新版本 (v${event.data.current_version})，无需更新。`);
+      break;
+
+    case "UpdateError":
+      resetCheckUpdateButton();
+      appendLog(`⚠️ 检查更新失败: ${event.data.error}`);
+      break;
   }
 };
 
@@ -96,6 +114,31 @@ function updateProgress(data) {
 function hideProgress() {
   const container = document.getElementById("progress-container");
   container.style.display = "none";
+}
+
+function resetCheckUpdateButton() {
+  const btn = document.getElementById("btn-check-update");
+  if (btn) {
+    btn.classList.remove("loading");
+    const textEl = document.getElementById("btn-update-text");
+    if (textEl) textEl.textContent = "检查更新";
+  }
+}
+
+function showUpdateModal(data) {
+  const badge = document.getElementById("update-modal-badge");
+  if (badge) badge.textContent = `v${data.latest_version}`;
+  const desc = document.getElementById("update-modal-desc");
+  if (desc) desc.textContent = `检测到官方发布了新版本（当前运行 v${data.current_version}，最新 v${data.latest_version}）。支持 Windows 单文件绿色免安装原地自升级与自动重启。`;
+  const notes = document.getElementById("update-notes-content");
+  if (notes) notes.textContent = data.release_notes || "本次更新包含性能提升与功能优化。";
+  const modal = document.getElementById("update-modal");
+  if (modal) modal.classList.add("show");
+}
+
+function closeUpdateModal() {
+  const modal = document.getElementById("update-modal");
+  if (modal) modal.classList.remove("show");
 }
 
 function disableAllButtons(activeId, actionType = "正在处理...") {
@@ -328,6 +371,53 @@ window.addEventListener("DOMContentLoaded", () => {
     appendLog("正在重新检测本地环境与网络配置...");
     postCommand("Refresh");
   });
+  // 检查更新按钮
+  const btnCheckUpdate = document.getElementById("btn-check-update");
+  if (btnCheckUpdate) {
+    btnCheckUpdate.addEventListener("click", () => {
+      btnCheckUpdate.classList.add("loading");
+      const textEl = document.getElementById("btn-update-text");
+      if (textEl) textEl.textContent = "检查中...";
+      appendLog("正在连接 GitHub 获取最新版本信息...");
+      postCommand("CheckUpdate");
+    });
+  }
+
+  // 自更新弹窗按钮
+  const btnCancelUpdate = document.getElementById("modal-btn-update-cancel");
+  if (btnCancelUpdate) {
+    btnCancelUpdate.addEventListener("click", closeUpdateModal);
+  }
+  const btnBrowserUpdate = document.getElementById("modal-btn-update-browser");
+  if (btnBrowserUpdate) {
+    btnBrowserUpdate.addEventListener("click", () => {
+      closeUpdateModal();
+      if (state.updateInfo && state.updateInfo.release_url) {
+        openExternal(state.updateInfo.release_url);
+      }
+    });
+  }
+  const btnConfirmUpdate = document.getElementById("modal-btn-update-confirm");
+  if (btnConfirmUpdate) {
+    btnConfirmUpdate.addEventListener("click", () => {
+      if (!state.updateInfo || !state.updateInfo.download_url) return;
+      const downloadUrl = state.updateInfo.download_url;
+      closeUpdateModal();
+      disableAllButtons("self_update", "正在下载新版本...");
+      appendLog(`🚀 开始自更新：正在高速下载 v${state.updateInfo.latest_version}...`);
+      postCommand("PerformSelfUpdate", { download_url: downloadUrl });
+    });
+  }
+
+  // 更新弹窗遮罩点击关闭
+  const updateModal = document.getElementById("update-modal");
+  if (updateModal) {
+    updateModal.addEventListener("click", (e) => {
+      if (e.target.id === "update-modal") {
+        closeUpdateModal();
+      }
+    });
+  }
 
   // 模态弹窗事件
   document.getElementById("modal-btn-cancel").addEventListener("click", closeConfirmModal);

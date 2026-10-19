@@ -10,6 +10,8 @@ pub enum IpcCommand {
     Uninstall { target_id: String },
     SetCustomProxy { proxy: Option<String> },
     OpenUrl { url: String },
+    CheckUpdate,
+    PerformSelfUpdate { download_url: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,6 +23,19 @@ pub enum AppEvent {
     Progress(DownloadProgress),
     InstallSuccess { target_id: String },
     InstallError { target_id: String, error: String },
+    UpdateAvailable {
+        current_version: String,
+        latest_version: String,
+        release_notes: String,
+        download_url: String,
+        release_url: String,
+    },
+    UpdateNotAvailable {
+        current_version: String,
+    },
+    UpdateError {
+        error: String,
+    },
 }
 
 impl Serialize for DownloadProgress {

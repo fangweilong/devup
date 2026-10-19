@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DevUp · 现代化开发环境与 AI 工具链管家</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='0%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%2338bdf8'/%3E%3Cstop offset='100%25' stop-color='%230284c7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='24' height='24' rx='6' fill='%230f172a'/%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M 4.5 3.5 C 3.95 3.5 3.5 3.95 3.5 4.5 L 3.5 19.5 C 3.5 20.05 3.95 20.5 4.5 20.5 L 12.5 20.5 C 17.5 20.5 21 16.8 21 12 C 21 7.2 17.5 3.5 12.5 3.5 Z M 12 6.2 L 16.8 11 L 14 11 L 14 17.8 L 10 17.8 L 10 11 L 7.2 11 Z' fill='url(%23g)'/%3E%3C/svg%3E" />
   <style>
     /* 嵌入样式，保证单文件运行时绝对独立 */
     __STYLE_PLACEHOLDER__
@@ -13,13 +14,19 @@
   <!-- 顶部状态栏与导航 -->
   <header>
     <div class="logo-area">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
+      <div class="logo-icon" title="DevUp · 现代化开发环境与 AI 工具链管家">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="devup-logo-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#38bdf8"/>
+              <stop offset="100%" stop-color="#0284c7"/>
+            </linearGradient>
+          </defs>
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M 4.5 3.5 C 3.95 3.5 3.5 3.95 3.5 4.5 L 3.5 19.5 C 3.5 20.05 3.95 20.5 4.5 20.5 L 12.5 20.5 C 17.5 20.5 21 16.8 21 12 C 21 7.2 17.5 3.5 12.5 3.5 Z M 12 6.2 L 16.8 11 L 14 11 L 14 17.8 L 10 17.8 L 10 11 L 7.2 11 Z" fill="url(#devup-logo-grad)"/>
         </svg>
       </div>
       <div class="brand-text">
-        <div class="brand-title">DevUp <span class="brand-badge">Pro</span></div>
+        <div class="brand-title">DevUp <span class="brand-badge">Pro</span> <span class="brand-version">v__VERSION_PLACEHOLDER__</span></div>
         <div class="brand-subtitle">现代化开发环境与 AI 工具链管家</div>
       </div>
     </div>
@@ -40,6 +47,14 @@
           <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
         </svg>
         刷新检测
+      </button>
+      <button id="btn-check-update" class="btn-update" title="检查 DevUp 软件版本更新">
+        <svg class="update-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <span id="btn-update-text">检查更新</span>
       </button>
     </div>
   </header>
@@ -99,6 +114,35 @@
       <div class="modal-actions">
         <button id="modal-btn-cancel" class="modal-btn secondary">取消</button>
         <button id="modal-btn-confirm" class="modal-btn danger">确认卸载</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 版本更新提示模态弹窗 -->
+  <div id="update-modal" class="modal-overlay">
+    <div class="modal-card update-modal-card">
+      <div class="modal-icon-wrap accent">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+      </div>
+      <div class="modal-body">
+        <div class="update-title-row">
+          <h3 id="update-modal-title">发现可用新版本</h3>
+          <span id="update-modal-badge" class="update-version-tag">v0.0.0</span>
+        </div>
+        <p id="update-modal-desc">检测到官方发布了新版本。支持 Windows 单文件绿色免安装原地自升级与自动重启。</p>
+        <div class="update-notes-box">
+          <div class="update-notes-label">更新日志：</div>
+          <pre id="update-notes-content" class="update-notes-content"></pre>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-btn-update-cancel" class="modal-btn secondary">稍后处理</button>
+        <button id="modal-btn-update-browser" class="modal-btn secondary">前往网页下载</button>
+        <button id="modal-btn-update-confirm" class="modal-btn primary">一键升级并重启</button>
       </div>
     </div>
   </div>

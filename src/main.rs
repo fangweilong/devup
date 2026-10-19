@@ -5,6 +5,7 @@ mod installer;
 mod network;
 mod state;
 mod icon_bytes;
+mod updater;
 
 use icon_bytes::APP_ICON_RGBA;
 use tao::window::Icon;
@@ -22,6 +23,7 @@ use detector::Detector;
 use installer::InstallerEngine;
 use network::proxy::detect_system_proxy;
 use state::{AppEvent, IpcCommand};
+use updater::SelfUpdater;
 
 #[derive(Debug)]
 enum UserEvent {
@@ -35,9 +37,18 @@ fn build_inlined_html() -> String {
 
     html.replace("__STYLE_PLACEHOLDER__", css)
         .replace("__SCRIPT_PLACEHOLDER__", js)
+        .replace("__VERSION_PLACEHOLDER__", env!("CARGO_PKG_VERSION"))
 }
 
 fn main() -> anyhow::Result<()> {
+    // 0. 自更新启动自检：静默清理上次原地更新遗留的 .old 旧版本文件
+    if let Ok(current_exe) = std::env::current_exe() {
+        let old_exe = current_exe.with_extension("exe.old");
+        if old_exe.exists() {
+            let _ = std::fs::remove_file(old_exe);
+        }
+    }
+
     // 1. 初始化异步 Tokio 运行时
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
@@ -136,6 +147,45 @@ fn main() -> anyhow::Result<()> {
                         cmd.creation_flags(0x08000000);
                     }
                     let _ = cmd.spawn();
+                }
+                Ok(IpcCommand::CheckUpdate) => {
+                    let tx = tx_for_ipc.clone();
+                    let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
+                    rt_for_ipc.spawn(async move {
+                        match SelfUpdater::check_for_update(proxy_str).await {
+                            Ok(Some(info)) => {
+                                let _ = tx.send(AppEvent::UpdateAvailable {
+                                    current_version: info.current_version,
+                                    latest_version: info.latest_version,
+                                    release_notes: info.release_notes,
+                                    download_url: info.download_url,
+                                    release_url: info.release_url,
+                                });
+                            }
+                            Ok(None) => {
+                                let _ = tx.send(AppEvent::UpdateNotAvailable {
+                                    current_version: env!("CARGO_PKG_VERSION").to_string(),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::UpdateError {
+                                    error: format!("{:#}", e),
+                                });
+                            }
+                        }
+                    });
+                }
+                Ok(IpcCommand::PerformSelfUpdate { download_url }) => {
+                    let tx = tx_for_ipc.clone();
+                    let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
+                    rt_for_ipc.spawn(async move {
+                        if let Err(e) = SelfUpdater::execute_update(&download_url, proxy_str, tx.clone()).await {
+                            let _ = tx.send(AppEvent::InstallError {
+                                target_id: "self_update".to_string(),
+                                error: format!("自升级失败: {:#}", e),
+                            });
+                        }
+                    });
                 }
                 Err(err) => {
                     eprintln!("解析 IPC 指令失败: {:?}, 原报文: {}", err, msg);
