@@ -26,8 +26,34 @@ pub struct SoftwareStatus {
 pub struct Detector;
 
 impl Detector {
+    /// 清洗与格式化从 CLI 输出中读取到的版本字符串
+    /// 例如: "2.1.303 (Claude Code)" -> "2.1.303"
+    ///       "codex-cli 0.163.0" -> "0.163.0"
+    ///       "omp/18.12.2" -> "18.12.2"
+    ///       "opencode v2.0.32" -> "2.0.32"
+    ///       "git version 2.55.0.windows.3" -> "2.55.0"
+    ///       "PowerShell 7.4.20" -> "7.4.20"
+    ///       "v24.21.0" -> "24.21.0"
+    pub fn clean_version_string(raw: &str) -> String {
+        let trimmed = raw.trim();
+        for part in trimmed.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '/' || c == ',') {
+            let p = part.trim().trim_start_matches(|c| c == 'v' || c == 'V');
+            if p.is_empty() {
+                continue;
+            }
+            let dots = p.chars().filter(|&c| c == '.').count();
+            let digits_start = p.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+            if digits_start && dots >= 1 {
+                let clean_p = p.split(|c: char| c.is_alphabetic()).next().unwrap_or(p).trim_end_matches('.');
+                if !clean_p.is_empty() {
+                    return clean_p.to_string();
+                }
+            }
+        }
+        trimmed.to_string()
+    }
+
     pub fn check_command(cmd: &str, version_arg: &str) -> (bool, Option<String>, Option<String>) {
-        // 去除可能的 .exe 后缀用于通用探测
         let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
 
         // 1. 先用 where.exe 探测（同时支持 .exe, .cmd, .bat 等扩展名）
@@ -96,7 +122,9 @@ impl Detector {
             })
         };
 
-        let version = try_run(false).or_else(|| try_run(true));
+        let version = try_run(false)
+            .or_else(|| try_run(true))
+            .map(|raw| Self::clean_version_string(&raw));
         (true, version, cmd_path)
     }
 
@@ -280,7 +308,7 @@ impl Detector {
             repo_url: "https://github.com/openai/codex".into(),
             installed: codex_ok,
             version: codex_ver,
-            latest_version: Some("v0.162.1".into()),
+            latest_version: Some("v0.163.0".into()),
             install_method: codex_method,
             default_channel: "官方npm包 (@openai/codex)".into(),
         });

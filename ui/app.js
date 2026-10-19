@@ -170,19 +170,23 @@ function getAppSvgIcon(id) {
   }
 }
 
-function normalizeVer(v) {
-  if (!v) return "";
-  return v.replace(/^[a-zA-Z\s@/-]+/, "").replace(/^v/, "").trim();
+function parseVersionNumbers(v) {
+  if (!v) return [];
+  const matches = v.match(/\d+/g);
+  return matches ? matches.map(Number) : [];
 }
 
 function hasNewerVersion(currentVer, latestVer) {
   if (!currentVer || !latestVer) return false;
-  const c = normalizeVer(currentVer);
-  const l = normalizeVer(latestVer);
-  if (!c || !l) return false;
-  return c !== l;
+  const cur = parseVersionNumbers(currentVer);
+  const lat = parseVersionNumbers(latestVer);
+  const minLen = Math.min(cur.length, lat.length);
+  for (let i = 0; i < minLen; i++) {
+    if (cur[i] < lat[i]) return true;  // 本地比最新版本低，需要升级
+    if (cur[i] > lat[i]) return false; // 本地版本更高或等于最新，无需升级
+  }
+  return lat.length > cur.length;
 }
-
 function renderAll() {
   const envContainer = document.getElementById("env-grid");
   const agentContainer = document.getElementById("agent-grid");
