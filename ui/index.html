@@ -10,22 +10,36 @@
   </style>
 </head>
 <body>
-  <!-- 顶部状态栏 -->
+  <!-- 顶部状态栏与导航 -->
   <header>
     <div class="logo-area">
-      <div class="logo-icon">⚡</div>
-      <div>
-        <h1>DevUp</h1>
-        <span style="font-size: 11px; color: var(--text-muted); margin-left: 2px;">开发环境与 AI 工具链管家</span>
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"></polygon>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">DevUp <span class="brand-badge">Pro</span></div>
+        <div class="brand-subtitle">现代化开发环境与 AI 工具链管家</div>
       </div>
     </div>
+    
+    <div class="header-center-tabs">
+      <button class="nav-tab active" data-filter="all">全部工具</button>
+      <button class="nav-tab" data-filter="env">基础开发环境</button>
+      <button class="nav-tab" data-filter="agent">AI Coding 智能体</button>
+    </div>
+
     <div class="top-actions">
       <div id="proxy-badge" class="proxy-pill">
         <span class="pulse-dot"></span>
         <span id="proxy-text">正在嗅探网络节点...</span>
       </div>
-      <button id="btn-refresh" class="btn-refresh">
-        <span>⟳</span> 刷新状态
+      <button id="btn-refresh" class="btn-refresh" title="重新检测所有软件与网络状态">
+        <svg class="spin-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
+        </svg>
+        刷新检测
       </button>
     </div>
   </header>
@@ -67,6 +81,27 @@
     <div id="console-output" class="console-output">Ready. 点击任意卡片上的【一键安装】即可全自动配置。
 </div>
   </footer>
+
+  <!-- 卸载二次确认模态弹窗 -->
+  <div id="confirm-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-icon-wrap danger">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          <line x1="10" y1="11" x2="10" y2="17"></line>
+          <line x1="14" y1="11" x2="14" y2="17"></line>
+        </svg>
+      </div>
+      <div class="modal-body">
+        <h3 id="modal-title">确认卸载软件？</h3>
+        <p id="modal-desc">即将卸载该工具并清理其依赖配置。此操作无法撤销，是否确认继续？</p>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-btn-cancel" class="modal-btn secondary">取消</button>
+        <button id="modal-btn-confirm" class="modal-btn danger">确认卸载</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // 嵌入脚本

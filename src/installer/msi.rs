@@ -158,4 +158,46 @@ impl WindowsInstaller {
             bail!("winget upgrade 退出码异常: {:?}", status.code())
         }
     }
+
+    /// 通过 winget 静默卸载包
+    pub async fn uninstall_via_winget<F>(package_id: &str, mut on_log: F) -> Result<()>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        let mut cmd = Command::new("winget.exe");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        cmd.args([
+            "uninstall",
+            "--id",
+            package_id,
+            "--exact",
+            "--silent",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("启动 winget uninstall 失败: {}", package_id))?;
+
+        if let Some(stdout) = child.stdout.take() {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    on_log(trimmed.to_string());
+                }
+            }
+        }
+
+        let status = child.wait().await?;
+        if status.success() {
+            Ok(())
+        } else {
+            bail!("winget 卸载 '{}' 退出码异常: {:?}", package_id, status.code())
+        }
+    }
 }

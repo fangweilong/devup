@@ -7,6 +7,7 @@ use crate::network::downloader::DownloadProgress;
 pub enum IpcCommand {
     Refresh,
     Install { target_id: String },
+    Uninstall { target_id: String },
     SetCustomProxy { proxy: Option<String> },
     OpenUrl { url: String },
 }

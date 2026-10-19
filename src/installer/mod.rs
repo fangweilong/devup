@@ -321,4 +321,221 @@ impl InstallerEngine {
 
         Ok(())
     }
+
+    /// 执行具体的软件卸载任务
+    pub async fn uninstall_target(
+        software_id: &str,
+        event_sender: UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let send_log = {
+            let tx = event_sender.clone();
+            let sid = software_id.to_string();
+            move |msg: String| {
+                let _ = tx.send(AppEvent::Log {
+                    target_id: sid.clone(),
+                    message: msg,
+                });
+            }
+        };
+
+        send_log(format!(">>> 开始执行卸载任务: {}", software_id));
+
+        match software_id {
+            "windows_terminal" => {
+                if WindowsInstaller::is_installed_via_winget("Microsoft.WindowsTerminal").await {
+                    send_log("正在通过 WinGet 静默卸载 Windows Terminal...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    WindowsInstaller::uninstall_via_winget("Microsoft.WindowsTerminal", move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await?;
+                    send_log("Windows Terminal 已卸载！".into());
+                } else {
+                    send_log("正在通过 PowerShell Remove-AppxPackage 卸载 Windows Terminal...".into());
+                    let script = "Get-AppxPackage *WindowsTerminal* | Remove-AppxPackage -ErrorAction SilentlyContinue";
+                    let mut cmd = tokio::process::Command::new("powershell.exe");
+                    #[cfg(windows)]
+                    cmd.creation_flags(0x08000000);
+                    let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
+                    send_log("Windows Terminal 卸载指令执行完毕！".into());
+                }
+            }
+
+            "powershell7" => {
+                if WindowsInstaller::is_installed_via_winget("Microsoft.PowerShell").await {
+                    send_log("正在通过 WinGet 卸载 PowerShell 7...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    WindowsInstaller::uninstall_via_winget("Microsoft.PowerShell", move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await?;
+                } else {
+                    send_log("正在查找 PowerShell 7 MSI 注册项并执行静默卸载...".into());
+                    let script = "Get-Package -Name 'PowerShell 7*' -ErrorAction SilentlyContinue | Uninstall-Package -Force";
+                    let mut cmd = tokio::process::Command::new("powershell.exe");
+                    #[cfg(windows)]
+                    cmd.creation_flags(0x08000000);
+                    let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
+                }
+                send_log("PowerShell 7 卸载完成！".into());
+            }
+
+            "nodejs" => {
+                send_log("正在通过 MSI/Package 接口执行 Node.js 静默卸载...".into());
+                let script = "Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue | Uninstall-Package -Force";
+                let mut cmd = tokio::process::Command::new("powershell.exe");
+                #[cfg(windows)]
+                cmd.creation_flags(0x08000000);
+                let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
+                send_log("Node.js 卸载指令已提交！".into());
+            }
+
+            "git" => {
+                if WindowsInstaller::is_installed_via_winget("Git.Git").await {
+                    send_log("通过 WinGet 静默卸载 Git...".into());
+                    let tx_log = event_sender.clone();
+                    let sid = software_id.to_string();
+                    WindowsInstaller::uninstall_via_winget("Git.Git", move |line| {
+                        let _ = tx_log.send(AppEvent::Log {
+                            target_id: sid.clone(),
+                            message: line,
+                        });
+                    }).await?;
+                } else {
+                    send_log("尝试定位 Git 默认安装目录下的 unins000.exe 静默卸载...".into());
+                    let unins_paths = [
+                        r"C:\Program Files\Git\unins000.exe",
+                        r"C:\apps\Git\unins000.exe",
+                    ];
+                    let mut uninstalled = false;
+                    for p in unins_paths {
+                        let path = std::path::Path::new(p);
+                        if path.exists() {
+                            let mut cmd = tokio::process::Command::new(path);
+                            #[cfg(windows)]
+                            cmd.creation_flags(0x08000000);
+                            cmd.args(["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"]);
+                            let _ = cmd.output().await;
+                            uninstalled = true;
+                            break;
+                        }
+                    }
+                    if !uninstalled {
+                        send_log("未找到 Git 本地 unins000.exe，尝试 winget 兜底移除...".into());
+                        let _ = WindowsInstaller::uninstall_via_winget("Git.Git", |_| {}).await;
+                    }
+                }
+                send_log("Git 卸载执行完毕！".into());
+            }
+
+            "claudecode" => {
+                // 1. 如果是 npm 安装，执行 npm uninstall -g
+                send_log("正在检查并卸载 Claude Code npm 全局包...".into());
+                let tx_log = event_sender.clone();
+                let _ = NpmInstaller::uninstall_global("@anthropic-ai/claude-code", move |l| {
+                    let _ = tx_log.send(AppEvent::Log {
+                        target_id: "claudecode".into(),
+                        message: l,
+                    });
+                }).await;
+
+                // 2. 清理原生二进制文件 ~/.local/bin/claude.exe
+                if let Ok(user_home) = std::env::var("USERPROFILE") {
+                    let local_bin_claude = std::path::Path::new(&user_home)
+                        .join(".local")
+                        .join("bin")
+                        .join("claude.exe");
+                    if local_bin_claude.exists() {
+                        send_log(format!("移除原生可执行文件: {:?}", local_bin_claude));
+                        let _ = tokio::fs::remove_file(local_bin_claude).await;
+                    }
+                }
+                send_log("Claude Code 卸载完成！".into());
+            }
+
+            "codex" => {
+                send_log("正在卸载 @openai/codex 全局包...".into());
+                let tx_log = event_sender.clone();
+                NpmInstaller::uninstall_global("@openai/codex", move |l| {
+                    let _ = tx_log.send(AppEvent::Log {
+                        target_id: "codex".into(),
+                        message: l,
+                    });
+                }).await?;
+                send_log("OpenAI Codex 卸载成功！".into());
+            }
+
+            "pi" => {
+                send_log("正在卸载 @earendil-works/pi 全局包与原生组件...".into());
+                let tx_log = event_sender.clone();
+                let _ = NpmInstaller::uninstall_global("@earendil-works/pi", move |l| {
+                    let _ = tx_log.send(AppEvent::Log {
+                        target_id: "pi".into(),
+                        message: l,
+                    });
+                }).await;
+                if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+                    let pi_dir = std::path::Path::new(&local_app).join("pi");
+                    if pi_dir.exists() {
+                        let _ = tokio::fs::remove_dir_all(pi_dir).await;
+                    }
+                }
+                send_log("Pi Agent 卸载完成！".into());
+            }
+
+            "oh-my-pi" => {
+                send_log("正在卸载 oh-my-pi 组件...".into());
+                let tx_log = event_sender.clone();
+                let _ = NpmInstaller::uninstall_global("@oh-my-pi/pi-coding-agent", move |l| {
+                    let _ = tx_log.send(AppEvent::Log {
+                        target_id: "oh-my-pi".into(),
+                        message: l,
+                    });
+                }).await;
+                if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+                    let omp_dir = std::path::Path::new(&local_app).join("omp");
+                    if omp_dir.exists() {
+                        send_log(format!("清理原生文件目录: {:?}", omp_dir));
+                        let _ = tokio::fs::remove_dir_all(omp_dir).await;
+                    }
+                }
+                send_log("oh-my-pi (omp) 卸载成功！".into());
+            }
+
+            "opencode" => {
+                send_log("正在卸载 OpenCode 全局包...".into());
+                let tx_log = event_sender.clone();
+                let _ = NpmInstaller::uninstall_global("@opencode/cli", move |l| {
+                    let _ = tx_log.send(AppEvent::Log {
+                        target_id: "opencode".into(),
+                        message: l,
+                    });
+                }).await;
+                let tx_log2 = event_sender.clone();
+                let _ = NpmInstaller::uninstall_global("opencode-ai", move |l| {
+                    let _ = tx_log2.send(AppEvent::Log {
+                        target_id: "opencode".into(),
+                        message: l,
+                    });
+                }).await;
+                send_log("OpenCode 卸载完成！".into());
+            }
+
+            other => {
+                bail!("未知卸载目标: {}", other);
+            }
+        }
+
+        let _ = event_sender.send(AppEvent::InstallSuccess {
+            target_id: software_id.to_string(),
+        });
+
+        Ok(())
+    }
 }

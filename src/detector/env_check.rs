@@ -18,7 +18,9 @@ pub struct SoftwareStatus {
     pub repo_url: String,
     pub installed: bool,
     pub version: Option<String>,
-    pub install_method: Option<String>, // "winget", "npm", "native_cli", "standalone", etc.
+    pub latest_version: Option<String>,
+    pub install_method: Option<String>,
+    pub default_channel: String, // 安装方式说明，例如 "WinGet / 微软官方MSIXBundle"、"国内官方npmmirror镜像 / 原生安装器" 等
 }
 
 pub struct Detector;
@@ -163,8 +165,11 @@ impl Detector {
             repo_url: "https://github.com/microsoft/terminal".into(),
             installed: wt_ok,
             version: wt_ver,
+            latest_version: Some("v1.25.2733.0".into()),
             install_method: wt_method,
+            default_channel: "WinGet / 微软官方MSIXBundle".into(),
         });
+
         let (pwsh_ok, pwsh_ver, pwsh_path) = Self::check_command("pwsh.exe", "--version");
         let pwsh_method = if pwsh_ok {
             Self::infer_install_method(pwsh_path.as_deref(), "msi")
@@ -179,7 +184,9 @@ impl Detector {
             repo_url: "https://github.com/PowerShell/PowerShell".into(),
             installed: pwsh_ok,
             version: pwsh_ver,
+            latest_version: Some("v7.6.7".into()),
             install_method: pwsh_method,
+            default_channel: "GitHub加速镜像 / WinGet".into(),
         });
 
         let (node_ok, node_ver, node_path) = Self::check_command("node.exe", "--version");
@@ -196,7 +203,9 @@ impl Detector {
             repo_url: "https://nodejs.org".into(),
             installed: node_ok,
             version: node_ver,
+            latest_version: Some("v24.21.0".into()),
             install_method: node_method,
+            default_channel: "阿里npmmirror镜像官方MSI".into(),
         });
 
         let (git_ok, git_ver, git_path) = Self::check_command("git.exe", "--version");
@@ -213,7 +222,9 @@ impl Detector {
             repo_url: "https://git-scm.com".into(),
             installed: git_ok,
             version: git_ver,
+            latest_version: Some("v2.56.0".into()),
             install_method: git_method,
+            default_channel: "GitHub加速镜像 / WinGet".into(),
         });
 
         // 2. AI Coding Agents
@@ -231,7 +242,9 @@ impl Detector {
             repo_url: "https://github.com/can1357/oh-my-pi".into(),
             installed: omp_ok,
             version: omp_ver,
+            latest_version: Some("v18.12.2".into()),
             install_method: omp_method,
+            default_channel: "官方原生更新器 / npmmirror".into(),
         });
 
         let (claude_ok, claude_ver, claude_path) = Self::check_command("claude.exe", "--version");
@@ -248,7 +261,9 @@ impl Detector {
             repo_url: "https://github.com/anthropics/claude-code".into(),
             installed: claude_ok,
             version: claude_ver,
+            latest_version: Some("v2.1.303".into()),
             install_method: claude_method,
+            default_channel: "Anthropic原生更新器 / npmmirror".into(),
         });
 
         let (codex_ok, codex_ver, codex_path) = Self::check_command("codex.exe", "--version");
@@ -265,7 +280,9 @@ impl Detector {
             repo_url: "https://github.com/openai/codex".into(),
             installed: codex_ok,
             version: codex_ver,
+            latest_version: Some("v0.162.1".into()),
             install_method: codex_method,
+            default_channel: "官方npm包 (@openai/codex)".into(),
         });
 
         let (pi_ok, pi_ver, pi_path) = Self::check_command("pi.exe", "--version");
@@ -282,7 +299,9 @@ impl Detector {
             repo_url: "https://github.com/earendil-works/pi".into(),
             installed: pi_ok,
             version: pi_ver,
+            latest_version: Some("v1.3.0".into()),
             install_method: pi_method,
+            default_channel: "官方原生更新器 / npmmirror".into(),
         });
 
         let (opencode_ok, opencode_ver, opencode_path) = Self::check_command("opencode.exe", "--version");
@@ -299,8 +318,9 @@ impl Detector {
             repo_url: "https://github.com/anomalyco/opencode".into(),
             installed: opencode_ok,
             version: opencode_ver,
+            latest_version: Some("v2.0.32".into()),
             install_method: opencode_method,
+            default_channel: "官方CLI自升级 / npmmirror".into(),
         });
-        list
     }
 }

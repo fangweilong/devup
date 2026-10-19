@@ -104,4 +104,38 @@ impl NpmInstaller {
             bail!("执行 '{}' 退出码异常: {:?}", cmd_name, status.code());
         }
     }
+
+    /// 执行 npm 全局包卸载
+    pub async fn uninstall_global<F>(package_name: &str, mut on_log: F) -> Result<()>
+    where
+        F: FnMut(String) + Send + 'static,
+    {
+        let mut cmd = Command::new("cmd.exe");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        cmd.args(["/c", "npm", "uninstall", "-g", package_name]);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("启动 npm 卸载进程失败: {}", package_name))?;
+
+        if let Some(stdout) = child.stdout.take() {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    on_log(trimmed.to_string());
+                }
+            }
+        }
+
+        let status = child.wait().await?;
+        if status.success() {
+            Ok(())
+        } else {
+            bail!("npm 卸载 '{}' 失败，返回码: {:?}", package_name, status.code());
+        }
+    }
 }

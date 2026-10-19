@@ -4,7 +4,10 @@ mod detector;
 mod installer;
 mod network;
 mod state;
+mod icon_bytes;
 
+use icon_bytes::APP_ICON_RGBA;
+use tao::window::Icon;
 use std::sync::Arc;
 use tao::{
     dpi::LogicalSize,
@@ -46,10 +49,18 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
+    let window_icon = Icon::from_rgba(APP_ICON_RGBA.to_vec(), 32, 32).ok();
+
+    let mut builder = WindowBuilder::new()
         .with_title("DevUp · 现代化开发环境与 AI 工具链管家")
-        .with_min_inner_size(LogicalSize::new(820.0, 600.0))
-        .build(&event_loop)?;
+        .with_inner_size(LogicalSize::new(960.0, 720.0))
+        .with_min_inner_size(LogicalSize::new(860.0, 620.0));
+
+    if let Some(icon) = window_icon {
+        builder = builder.with_window_icon(Some(icon));
+    }
+
+    let window = builder.build(&event_loop)?;
 
     let html_content = build_inlined_html();
 
@@ -93,6 +104,17 @@ fn main() -> anyhow::Result<()> {
                     let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
                     rt_for_ipc.spawn(async move {
                         if let Err(e) = InstallerEngine::install_target(&target_id, proxy_str, tx.clone()).await {
+                            let _ = tx.send(AppEvent::InstallError {
+                                target_id,
+                                error: format!("{:#}", e),
+                            });
+                        }
+                    });
+                }
+                Ok(IpcCommand::Uninstall { target_id }) => {
+                    let tx = tx_for_ipc.clone();
+                    rt_for_ipc.spawn(async move {
+                        if let Err(e) = InstallerEngine::uninstall_target(&target_id, tx.clone()).await {
                             let _ = tx.send(AppEvent::InstallError {
                                 target_id,
                                 error: format!("{:#}", e),
