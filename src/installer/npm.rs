@@ -34,6 +34,16 @@ impl NpmInstaller {
             }
         }
 
+        on_log(format!(
+            "$ npm install -g {} --registry={}{}",
+            package_name,
+            NPM_MIRROR_REGISTRY,
+            proxy_url
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| format!(" --proxy={}", p))
+                .unwrap_or_default()
+        ));
+
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = cmd
@@ -81,6 +91,8 @@ impl NpmInstaller {
             }
         }
 
+        on_log(format!("$ {} {}", cmd_name, args.join(" ")));
+
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
         let mut child = cmd
@@ -116,6 +128,8 @@ impl NpmInstaller {
         cmd.args(["/c", "npm", "uninstall", "-g", package_name]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        on_log(format!("$ npm uninstall -g {}", package_name));
+
 
         let mut child = cmd
             .spawn()

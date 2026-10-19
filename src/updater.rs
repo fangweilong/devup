@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -22,7 +21,6 @@ pub struct GitHubRelease {
 pub struct GitHubAsset {
     pub name: String,
     pub browser_download_url: String,
-    pub size: u64,
 }
 
 #[derive(Clone, Debug)]
