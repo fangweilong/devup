@@ -32,6 +32,25 @@ enum UserEvent {
     PushToWebview(AppEvent),
 }
 
+/// macOS: 在真实的左键按下事件上启动系统级整窗拖拽。
+///
+/// 必须在前端 mousedown 阶段调用。此时 currentEvent 仍保留用户实际按下
+/// 的位置，macOS 才能正确计算窗口与鼠标之间的偏移量。
+#[cfg(target_os = "macos")]
+unsafe fn native_drag_window(ns_window: *mut std::ffi::c_void) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    let window = ns_window as *mut AnyObject;
+    let app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+    let event: *mut AnyObject = msg_send![app, currentEvent];
+    if event.is_null() {
+        return;
+    }
+
+    let _: () = msg_send![window, performWindowDragWithEvent: event];
+}
+
 fn build_inlined_html() -> String {
     let html = include_str!("../ui/index.html");
     let css = include_str!("../ui/style.css");
@@ -76,18 +95,29 @@ fn main() -> anyhow::Result<()> {
     }
 
     // macOS: 隐藏原生标题栏视觉样式，让 WebView 内容延伸到红绿灯按钮区域，
-    // 与应用自身的深色头部融为一体（tao 内部已处理 WKWebView 下背景拖拽移动窗口）
+    // 与应用自身的深色头部融为一体。
+    // 注意：不要开启 movable_by_window_background —— tao 的实现会在每一次
+    // NSLeftMouseDown 上无条件调用 performWindowDragWithEvent:，会把边缘
+    // 拉拽伸缩（以及内容区文字选中）劫持成整窗移动。窗口拖动改为：头部
+    // 空白区按下时经 IPC 触发 DragWindow，由 drag_window() 定向发起整窗拖拽。
     #[cfg(target_os = "macos")]
     {
         use tao::platform::macos::WindowBuilderExtMacOS;
         builder = builder
             .with_titlebar_transparent(true)
             .with_fullsize_content_view(true)
-            .with_title_hidden(true)
-            .with_movable_by_window_background(true);
+            .with_title_hidden(true);
     }
 
     let window = builder.build(&event_loop)?;
+
+    // macOS: IPC 回调需在头部拖拽达到阈值的中段直接对 NSWindow 发起拖拽，
+    // 提前取裸指针（窗口存活周期等同进程，指针不会失效）。
+    #[cfg(target_os = "macos")]
+    let ns_window_ptr = {
+        use tao::platform::macos::WindowExtMacOS;
+        window.ns_window()
+    };
 
     let html_content = build_inlined_html();
 
@@ -208,6 +238,13 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     });
+                }
+                Ok(IpcCommand::DragWindow) => {
+                    // macOS: 前端已按位移阈值过滤，此处发起系统级整窗拖拽
+                    #[cfg(target_os = "macos")]
+                    unsafe {
+                        native_drag_window(ns_window_ptr);
+                    }
                 }
                 Ok(IpcCommand::PerformSelfUpdate { download_url }) => {
                     let tx = tx_for_ipc.clone();

@@ -17,6 +17,8 @@ pub enum IpcCommand {
     OpenUrl { url: String },
     CheckUpdate,
     PerformSelfUpdate { download_url: String },
+    /// macOS 头部空白区按下时，请求原生整窗拖拽（替代 movableByWindowBackground 全局劫持）
+    DragWindow,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -27,6 +27,19 @@ function openExternal(url) {
 const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform || "") || /Mac OS X/.test(navigator.userAgent || "");
 if (isMac) {
   document.body.classList.add("is-mac");
+
+  // 必须在 mousedown 阶段启动原生拖拽，让 macOS 使用真实的按下事件作为
+  // 拖拽锚点。延迟到 mousemove/IPC 阶段会丢失按下位置，尤其在副屏上会造成
+  // 窗口瞬移到鼠标下方。
+  const headerEl = document.querySelector("header");
+  if (headerEl) {
+    headerEl.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest("button, input, select, textarea, a")) {
+        return;
+      }
+      postCommand("DragWindow");
+    });
+  }
 }
 
 // 供 Rust 回调的全局事件接收器

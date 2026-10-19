@@ -42,6 +42,7 @@ header {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
   z-index: 10;
+  cursor: default;
 }
 
 /* macOS 无边框融合模式：内容延伸至红绿灯标题栏区域，
