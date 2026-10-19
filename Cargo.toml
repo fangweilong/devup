@@ -1,0 +1,15 @@
+[package]
+name = "devup"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+futures-util = "0.3.34"
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tao = "0.37.1"
+tokio = { version = "1.53.3", features = ["full"] }
+winreg = "0.56.0"
+wry = "0.57.0"

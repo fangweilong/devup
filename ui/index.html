@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DevUp · 现代化开发环境与 AI 工具链管家</title>
+  <style>
+    /* 嵌入样式，保证单文件运行时绝对独立 */
+    __STYLE_PLACEHOLDER__
+  </style>
+</head>
+<body>
+  <!-- 顶部状态栏 -->
+  <header>
+    <div class="logo-area">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <h1>DevUp</h1>
+        <span style="font-size: 11px; color: var(--text-muted); margin-left: 2px;">开发环境与 AI 工具链管家</span>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div id="proxy-badge" class="proxy-pill">
+        <span class="pulse-dot"></span>
+        <span id="proxy-text">正在嗅探网络节点...</span>
+      </div>
+      <button id="btn-refresh" class="btn-refresh">
+        <span>⟳</span> 刷新状态
+      </button>
+    </div>
+  </header>
+
+  <!-- 主内容区 -->
+  <main>
+    <!-- 第一部分：基础开发环境 -->
+    <section>
+      <div class="section-title">
+        <span>01</span> 基础开发环境与终端 (实时探测)
+      </div>
+      <div id="env-grid" class="grid-cards">
+        <!-- 动态生成 -->
+      </div>
+    </section>
+
+    <!-- 第二部分：AI Coding Agents -->
+    <section>
+      <div class="section-title">
+        <span>02</span> AI Coding 智能体 (国内极速直连)
+      </div>
+      <div id="agent-grid" class="grid-cards">
+        <!-- 动态生成 -->
+      </div>
+    </section>
+  </main>
+
+  <!-- 底部状态与日志控制台 -->
+  <footer>
+    <div id="progress-container" class="progress-container">
+      <div class="progress-info">
+        <span id="progress-text-left">正在下载...</span>
+        <span id="progress-text-right">0.0 MB/s</span>
+      </div>
+      <div class="progress-bar-track">
+        <div id="progress-fill" class="progress-bar-fill"></div>
+      </div>
+    </div>
+    <div id="console-output" class="console-output">Ready. 点击任意卡片上的【一键安装】即可全自动配置。
+</div>
+  </footer>
+
+  <script>
+    // 嵌入脚本
+    __SCRIPT_PLACEHOLDER__
+  </script>
+</body>
+</html>
