@@ -38,3 +38,31 @@ impl Serialize for DownloadProgress {
         s.end()
     }
 }
+
+impl<'de> Deserialize<'de> for DownloadProgress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Helper {
+            task_id: Option<String>,
+            downloaded: Option<u64>,
+            total: Option<u64>,
+            percentage: Option<f32>,
+            speed_mb: Option<f64>,
+            finished: Option<bool>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        Ok(DownloadProgress {
+            task_id: helper.task_id.unwrap_or_default(),
+            downloaded_bytes: helper.downloaded.unwrap_or(0),
+            total_bytes: helper.total.unwrap_or(0),
+            percentage: helper.percentage.unwrap_or(0.0),
+            speed_mb_s: helper.speed_mb.unwrap_or(0.0),
+            finished: helper.finished.unwrap_or(false),
+        })
+    }
+}

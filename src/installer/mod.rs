@@ -2,7 +2,6 @@ pub mod msi;
 pub mod npm;
 
 use anyhow::{bail, Result};
-use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::network::downloader::{create_http_client, download_file};

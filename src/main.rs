@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     // 2. 初始化 GUI 事件循环与跨线程 Proxy
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
@@ -145,4 +146,7 @@ fn main() -> anyhow::Result<()> {
             _ => (),
         }
     });
+
+    #[allow(unreachable_code)]
+    Ok(())
 }
