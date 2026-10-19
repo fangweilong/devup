@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - 'feat/**'
+    paths:
+      - 'Cargo.toml'
+      - '.github/workflows/release.yml'
     tags:
       - 'v*'
   pull_request:

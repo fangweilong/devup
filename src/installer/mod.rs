@@ -300,6 +300,7 @@ impl InstallerEngine {
                 .await?;
 
                 log("下载完成，正在后台静默安装 PowerShell 7...".into());
+                log(format!("$ msiexec.exe /i \"{}\" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1", dest.display()));
                 WindowsInstaller::install_msi(&dest, &["ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1"]).await?;
                 log("PowerShell 7 安装完成！".into());
             }
@@ -328,6 +329,7 @@ impl InstallerEngine {
                 .await?;
 
                 log("下载完成，正在静默部署 Windows Terminal AppX...".into());
+                log(format!("$ powershell.exe -NoProfile -Command \"Add-AppxPackage -Path '{}'\"", dest.display()));
                 WindowsInstaller::install_appx(&dest).await?;
                 log("Windows Terminal 部署成功！".into());
             }
@@ -344,6 +346,7 @@ impl InstallerEngine {
                 .await?;
 
                 log("下载完成，正在后台静默安装 Node.js LTS...".into());
+                log(format!("$ msiexec.exe /i \"{}\" /quiet /norestart", dest.display()));
                 WindowsInstaller::install_msi(&dest, &[]).await?;
                 log("Node.js LTS 安装成功！".into());
             }
@@ -371,6 +374,7 @@ impl InstallerEngine {
                 .await?;
 
                 log("正在后台静默安装 Git...".into());
+                log(format!("$ \"{}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS", dest.display()));
                 let mut cmd = tokio::process::Command::new(&dest);
                 cmd.args([
                     "/VERYSILENT",
@@ -420,6 +424,8 @@ impl InstallerEngine {
                     log("正在通过 PowerShell Remove-AppxPackage 卸载 Windows Terminal...".into());
                     let script = "Get-AppxPackage *WindowsTerminal* | Remove-AppxPackage -ErrorAction SilentlyContinue";
                     let mut cmd = tokio::process::Command::new("powershell.exe");
+                    log(format!("$ powershell.exe -NoProfile -Command \"{}\"", script));
+                    #[cfg(windows)]
                     cmd.creation_flags(0x08000000);
                     let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
                     log("Windows Terminal 卸载指令执行完毕！".into());
@@ -434,6 +440,8 @@ impl InstallerEngine {
                     log("正在查找 PowerShell 7 MSI 注册项并执行静默卸载...".into());
                     let script = "Get-Package -Name 'PowerShell 7*' -ErrorAction SilentlyContinue | Uninstall-Package -Force";
                     let mut cmd = tokio::process::Command::new("powershell.exe");
+                    log(format!("$ powershell.exe -NoProfile -Command \"{}\"", script));
+                    #[cfg(windows)]
                     cmd.creation_flags(0x08000000);
                     let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
                 }
@@ -444,6 +452,8 @@ impl InstallerEngine {
                 log("正在通过 MSI/Package 接口执行 Node.js 静默卸载...".into());
                 let script = "Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue | Uninstall-Package -Force";
                 let mut cmd = tokio::process::Command::new("powershell.exe");
+                log(format!("$ powershell.exe -NoProfile -Command \"{}\"", script));
+                #[cfg(windows)]
                 cmd.creation_flags(0x08000000);
                 let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
                 log("Node.js 卸载指令已提交！".into());
@@ -464,6 +474,8 @@ impl InstallerEngine {
                         let path = std::path::Path::new(p);
                         if path.exists() {
                             let mut cmd = tokio::process::Command::new(path);
+                            log(format!("$ \"{}\" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES", path.display()));
+                            #[cfg(windows)]
                             cmd.creation_flags(0x08000000);
                             cmd.args(["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"]);
                             let _ = cmd.output().await;

@@ -93,6 +93,11 @@ impl WindowsInstaller {
         ]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        on_log(format!(
+            "$ winget upgrade --id {} --exact --silent --accept-package-agreements --accept-source-agreements",
+            package_id
+        ));
+
 
         let mut child = cmd
             .spawn()
@@ -178,6 +183,8 @@ impl WindowsInstaller {
         ]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        on_log(format!("$ winget uninstall --id {} --exact --silent", package_id));
+
 
         let mut child = cmd
             .spawn()

@@ -67,7 +67,7 @@ impl NpmInstaller {
     pub async fn install_global<F>(
         package_name: &str,
         proxy_url: Option<&str>,
-        on_log: F,
+        mut on_log: F,
     ) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
@@ -85,6 +85,16 @@ impl NpmInstaller {
                 cmd.arg(format!("--proxy={}", proxy));
             }
         }
+
+        on_log(format!(
+            "$ npm install -g {} --registry={}{}",
+            package_name,
+            NPM_MIRROR_REGISTRY,
+            proxy_url
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| format!(" --proxy={}", p))
+                .unwrap_or_default()
+        ));
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -107,7 +117,7 @@ impl NpmInstaller {
         cmd_name: &str,
         args: &[&str],
         proxy_url: Option<&str>,
-        on_log: F,
+        mut on_log: F,
     ) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
@@ -124,6 +134,8 @@ impl NpmInstaller {
                 cmd.env("ALL_PROXY", proxy);
             }
         }
+
+        on_log(format!("$ {} {}", cmd_name, args.join(" ")));
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -142,7 +154,7 @@ impl NpmInstaller {
     }
 
     /// 执行 npm 全局包卸载
-    pub async fn uninstall_global<F>(package_name: &str, on_log: F) -> Result<()>
+    pub async fn uninstall_global<F>(package_name: &str, mut on_log: F) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
     {
@@ -150,6 +162,8 @@ impl NpmInstaller {
         cmd.args(["uninstall", "-g", package_name]);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        on_log(format!("$ npm uninstall -g {}", package_name));
+
 
         let mut child = cmd
             .spawn()

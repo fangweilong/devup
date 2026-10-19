@@ -7,6 +7,7 @@ let state = {
   activeTaskId: null,
   activeFilter: "all",
   pendingUninstallId: null,
+  pendingAction: null,
   updateInfo: null,
 };
 
@@ -216,39 +217,384 @@ function enableAllButtons() {
   renderAll();
 }
 
-function installTarget(id) {
-  if (state.activeTaskId) return;
-  state.activeTaskId = id;
-  disableAllButtons(id, "正在安装/升级...");
-  appendLog(`准备安装/升级目标: ${id}...`);
-  postCommand("Install", { target_id: id });
+function getExecutionPlan(item, action) {
+  const isUpgrade = action === "upgrade";
+  const isUninstall = action === "uninstall";
+  const isReinstall = action === "reinstall";
+
+  let tagText = "一键安装";
+  let tagClass = "install";
+  let title = `确认安装 ${item.name}？`;
+  let confirmText = "确认安装";
+  let confirmClass = "primary";
+  let iconWrapClass = "accent";
+  let iconHtml = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+  if (isUpgrade) {
+    tagText = "版本升级";
+    tagClass = "upgrade";
+    title = `确认升级 ${item.name}？`;
+    confirmText = "确认升级";
+    confirmClass = "primary";
+    iconWrapClass = "success";
+    iconHtml = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`;
+  } else if (isReinstall) {
+    tagText = "重新安装";
+    tagClass = "reinstall";
+    title = `确认重新安装 ${item.name}？`;
+    confirmText = "确认重装";
+    confirmClass = "primary";
+    iconWrapClass = "purple";
+    iconHtml = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`;
+  } else if (isUninstall) {
+    tagText = "卸载清理";
+    tagClass = "uninstall";
+    title = `确认卸载 ${item.name}？`;
+    confirmText = "确认卸载";
+    confirmClass = "danger";
+    iconWrapClass = "danger";
+    iconHtml = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>`;
+  }
+
+  const isWinget = item.install_method === "winget" || (item.install_method && item.install_method.includes("winget"));
+  const proxyNotice = state.proxy ? ` --proxy=${state.proxy}` : "";
+  const proxyTip = state.proxy ? `已感知系统代理 ${state.proxy}，DevUp 会自动配置环境变量透传。` : "正在连接国内镜像加速通道进行高速处理。";
+
+  let summary = "";
+  let commands = [];
+  let notes = "";
+
+  switch (item.id) {
+    case "windows_terminal":
+      if (isUninstall) {
+        summary = "即将卸载 Windows Terminal 并从系统中注销应用包。";
+        commands = isWinget
+          ? ["winget uninstall --id Microsoft.WindowsTerminal --exact --silent"]
+          : ['powershell.exe -NoProfile -Command "Get-AppxPackage *WindowsTerminal* | Remove-AppxPackage -ErrorAction SilentlyContinue"'];
+        notes = "卸载操作会注销 Windows Terminal AppX 包，不影响现有配置文件。";
+      } else if (isUpgrade) {
+        summary = `检测到官方新版本 (${item.version || "已装"} → ${item.latest_version || "最新"})，即将执行静默升级。`;
+        commands = [
+          "winget upgrade --id Microsoft.WindowsTerminal --exact --silent --accept-source-agreements --accept-package-agreements",
+          '# 备用回退: powershell.exe -Command "Add-AppxPackage -Path %TEMP%\\devup-cache\\WindowsTerminal.msixbundle"'
+        ];
+        notes = "DevUp 会优先通过 WinGet 静默升级；若不支持则自动通过国内 GitHub 镜像下载最新 MSIXBundle 覆盖部署。";
+      } else {
+        summary = "即将通过微软官方原生 MSIXBundle 离线包部署 Windows Terminal。";
+        commands = [
+          "# 1. 从国内 GitHub 优选节点高速下载 Microsoft.WindowsTerminal MSIXBundle",
+          'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-AppxPackage -Path \'%TEMP%\\devup-cache\\WindowsTerminal.msixbundle\'"'
+        ];
+        notes = "微软原生 AppX 方式安装，无需提权弹窗，安装完成后开箱即用。";
+      }
+      break;
+
+    case "powershell7":
+      if (isUninstall) {
+        summary = "即将从系统中卸载 PowerShell 7 核心运行库。";
+        commands = isWinget
+          ? ["winget uninstall --id Microsoft.PowerShell --exact --silent"]
+          : ['powershell.exe -NoProfile -Command "Get-Package -Name \'PowerShell 7*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
+        notes = "卸载后资源管理器右键快捷菜单的“在 PowerShell 7 中打开”将被移除。";
+      } else {
+        const opName = isUpgrade ? "版本升级" : (isReinstall ? "重新安装" : "全自动静默安装");
+        summary = `通过国内 GitHub 镜像下载最新 MSI 并执行${opName}。`;
+        commands = [
+          "# 1. 测速并优选 GitHub 镜像下载: PowerShell-7.4.6-win-x64.msi",
+          'msiexec.exe /i "%TEMP%\\devup-cache\\PowerShell-7.4.6-win-x64.msi" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1'
+        ];
+        notes = "安装参数已启用 ADD_EXPLORER_CONTEXT_MENU，自动集成右键快捷菜单。";
+      }
+      break;
+
+    case "nodejs":
+      if (isUninstall) {
+        summary = "即将卸载 Node.js LTS 运行环境。";
+        commands = ['powershell.exe -NoProfile -Command "Get-Package -Name \'Node.js*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
+        notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
+      } else {
+        const opName = isUpgrade ? "升级" : (isReinstall ? "重装" : "安装");
+        summary = `从阿里 npmmirror 官方镜像下载 Node.js LTS MSI 并执行${opName}。`;
+        commands = [
+          "# 1. 从 https://registry.npmmirror.com/-/binary/node/ 下载 node-v20.18.0-x64.msi",
+          'msiexec.exe /i "%TEMP%\\devup-cache\\node-v20.18.0-x64.msi" /quiet /norestart'
+        ];
+        notes = "静默安装后自动写入系统 PATH，提供全局 node 与 npm 命令。";
+      }
+      break;
+
+    case "git":
+      if (isUninstall) {
+        summary = "即将卸载 Git for Windows 版本管理工具。";
+        commands = isWinget
+          ? ["winget uninstall --id Git.Git --exact --silent"]
+          : ['"C:\\Program Files\\Git\\unins000.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES'];
+        notes = "卸载后将移除全局 git 命令与 Git Bash 终端。";
+      } else if (isUpgrade) {
+        summary = `检测到 Git 新版本 (${item.version || "已装"} → ${item.latest_version || "最新"})，即将执行静默更新。`;
+        commands = [
+          "winget upgrade --id Git.Git --exact --silent --accept-source-agreements --accept-package-agreements",
+          '# 备用回退: Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
+        ];
+        notes = "优先调用 WinGet 原生更新；若未注册则自动下载 Git for Windows 安装包静默覆盖升级。";
+      } else {
+        summary = "优选国内 GitHub 加速镜像下载 Git for Windows 并执行静默安装。";
+        commands = [
+          "# 1. 从国内节点高速下载 Git-2.56.0.2-64-bit.exe 到临时目录",
+          'Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
+        ];
+        notes = "预设最佳 Windows 编码与换行符配置，自带 Git Credential Manager。";
+      }
+      break;
+
+    case "claudecode":
+      if (isUninstall) {
+        summary = "即将卸载 Claude Code 全局 npm 包并清理残留二进制。";
+        commands = [
+          "npm uninstall -g @anthropic-ai/claude-code",
+          "# 自动清理可能存在的原生文件: %USERPROFILE%\\.local\\bin\\claude.exe"
+        ];
+        notes = "卸载后全局 claude 命令将被移除，用户本地配置与项目上下文保持不变。";
+      } else if (isUpgrade && item.installed) {
+        summary = `即将升级 Claude Code (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+        commands = [
+          "claude update",
+          `# 备用回退: npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com${proxyNotice}`
+        ];
+        notes = "优先使用 Anthropic 官方内置更新命令 `claude update`；若受阻则自动通过 npmmirror 镜像覆盖。";
+      } else {
+        summary = "使用国内官方 npmmirror 镜像源全局安装 Claude Code。";
+        commands = [`npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com${proxyNotice}`];
+        notes = `${proxyTip} 安装后直接在终端执行 \`claude\` 即可进入交互会话。`;
+      }
+      break;
+
+    case "codex":
+      if (isUninstall) {
+        summary = "即将卸载 OpenAI Codex 全局 CLI 包。";
+        commands = ["npm uninstall -g @openai/codex"];
+        notes = "卸载后全局 codex 命令将被移除。";
+      } else {
+        const opName = isUpgrade ? "升级" : (isReinstall ? "重新安装" : "安装");
+        summary = `使用国内 npmmirror 镜像源${opName} OpenAI Codex。`;
+        commands = [`npm install -g @openai/codex --registry=https://registry.npmmirror.com${proxyNotice}`];
+        notes = `${proxyTip} 安装完成后终端输入 \`codex\` 即可使用。`;
+      }
+      break;
+
+    case "pi":
+      if (isUninstall) {
+        summary = "即将卸载 Pi Agent 并清理本地数据缓存。";
+        commands = [
+          "npm uninstall -g @earendil-works/pi",
+          "# 自动清理本地应用数据目录: %LOCALAPPDATA%\\pi"
+        ];
+        notes = "卸载后全局 pi 命令将被移除。";
+      } else if (isUpgrade && item.installed) {
+        summary = `即将升级 Pi Agent (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+        commands = [
+          "pi update",
+          `# 备用回退: npm install -g @earendil-works/pi --registry=https://registry.npmmirror.com${proxyNotice}`
+        ];
+        notes = "官方原生更新器会无缝保留您在本地的模型连接配置。";
+      } else {
+        summary = "使用国内 npmmirror 镜像源安装 Earendil Works Pi Agent。";
+        commands = [`npm install -g @earendil-works/pi --registry=https://registry.npmmirror.com${proxyNotice}`];
+        notes = `${proxyTip} 安装后终端输入 \`pi\` 即可体验统一 Coding Agent 架构。`;
+      }
+      break;
+
+    case "oh-my-pi":
+      if (isUninstall) {
+        summary = "即将卸载 oh-my-pi (omp) 智能体并清理数据目录。";
+        commands = [
+          "npm uninstall -g @oh-my-pi/pi-coding-agent",
+          "# 自动清理本地原生目录: %LOCALAPPDATA%\\omp"
+        ];
+        notes = "卸载后全局 omp 命令将被移除。";
+      } else if (isUpgrade && item.installed) {
+        summary = `即将升级 oh-my-pi (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+        commands = [
+          "omp update",
+          `# 备用回退: npm install -g @oh-my-pi/pi-coding-agent --registry=https://registry.npmmirror.com${proxyNotice}`
+        ];
+        notes = "原生自升级命令会自动同步最新的 subagent 架构与工具链。";
+      } else {
+        summary = "通过国内 npmmirror 镜像源安装 oh-my-pi (omp) 智能体。";
+        commands = [`npm install -g @oh-my-pi/pi-coding-agent --registry=https://registry.npmmirror.com${proxyNotice}`];
+        notes = `${proxyTip} 安装完成后在终端输入 \`omp\` 即可唤起全功能 AI 编程会话。`;
+      }
+      break;
+
+    case "opencode":
+      if (isUninstall) {
+        summary = "即将卸载 OpenCode 及其关联的全局 npm 包。";
+        commands = [
+          "npm uninstall -g @opencode/cli",
+          "npm uninstall -g opencode-ai"
+        ];
+        notes = "同时清理新老版本可能注册的全局包名。";
+      } else if (isUpgrade && item.installed) {
+        summary = `即将升级 OpenCode (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+        commands = [
+          "opencode upgrade",
+          `# 备用回退: npm install -g @opencode/cli --registry=https://registry.npmmirror.com${proxyNotice}`
+        ];
+        notes = "优先调用官方原生升级命令，保持与官方代码库实时同步。";
+      } else {
+        summary = "通过国内 npmmirror 镜像源安装 OpenCode 全局 CLI。";
+        commands = [`npm install -g @opencode/cli --registry=https://registry.npmmirror.com${proxyNotice}`];
+        notes = `${proxyTip} 安装后在终端键入 \`opencode\` 即可使用。`;
+      }
+      break;
+
+    default:
+      summary = `即将执行 ${item.name} 的 ${tagText} 操作。`;
+      commands = [`# 执行目标: ${item.id} (${action})`];
+      notes = "";
+      break;
+  }
+
+  return {
+    summary,
+    commands,
+    notes,
+    tagText,
+    tagClass,
+    title,
+    confirmText,
+    confirmClass,
+    iconWrapClass,
+    iconHtml,
+  };
 }
 
-function requestUninstall(id, name) {
+function requestAction(id, action) {
   if (state.activeTaskId) return;
-  state.pendingUninstallId = id;
+  const item = state.softwares.find((s) => s.id === id) || { id, name: id, installed: false };
+  const plan = getExecutionPlan(item, action);
+  state.pendingAction = { id, action, item, plan };
+
   const modal = document.getElementById("confirm-modal");
+  const iconWrap = document.getElementById("modal-icon-wrap");
   const title = document.getElementById("modal-title");
+  const tag = document.getElementById("modal-action-tag");
   const desc = document.getElementById("modal-desc");
-  title.textContent = `确认卸载 ${name}？`;
-  desc.textContent = `系统将清理其已安装的文件与全局环境配置。此操作无法撤销，确定继续吗？`;
-  modal.classList.add("show");
+  const cmdContent = document.getElementById("modal-cmd-content");
+  const tipText = document.getElementById("modal-tip-text");
+  const confirmBtn = document.getElementById("modal-btn-confirm");
+  const copyBtn = document.getElementById("modal-btn-copy-cmd");
+  const copyLabel = document.getElementById("copy-btn-text");
+
+  if (iconWrap) {
+    iconWrap.className = `modal-icon-wrap ${plan.iconWrapClass}`;
+    iconWrap.innerHTML = plan.iconHtml;
+  }
+  if (title) title.textContent = plan.title;
+  if (tag) {
+    tag.textContent = plan.tagText;
+    tag.className = `action-tag ${plan.tagClass}`;
+  }
+  if (desc) desc.textContent = plan.summary;
+  if (cmdContent) cmdContent.textContent = plan.commands.join("\n");
+  if (tipText) tipText.textContent = plan.notes;
+  if (confirmBtn) {
+    confirmBtn.textContent = plan.confirmText;
+    confirmBtn.className = `modal-btn ${plan.confirmClass}`;
+  }
+  if (copyBtn && copyLabel) {
+    copyBtn.classList.remove("copied");
+    copyLabel.textContent = "复制命令";
+  }
+
+  if (modal) modal.classList.add("show");
 }
 
 function closeConfirmModal() {
+  state.pendingAction = null;
   state.pendingUninstallId = null;
   const modal = document.getElementById("confirm-modal");
-  modal.classList.remove("show");
+  if (modal) modal.classList.remove("show");
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch (e) {
+    console.error("复制失败", e);
+  }
+  document.body.removeChild(ta);
+}
+
+function copyModalCommands() {
+  if (!state.pendingAction || !state.pendingAction.plan) return;
+  const text = state.pendingAction.plan.commands.join("\n");
+
+  const finishCopy = () => {
+    const btn = document.getElementById("modal-btn-copy-cmd");
+    const label = document.getElementById("copy-btn-text");
+    if (btn && label) {
+      btn.classList.add("copied");
+      label.textContent = "已复制 ✓";
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        label.textContent = "复制命令";
+      }, 1500);
+    }
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(finishCopy).catch(() => {
+      fallbackCopy(text);
+      finishCopy();
+    });
+  } else {
+    fallbackCopy(text);
+    finishCopy();
+  }
+}
+
+function executePendingAction() {
+  const pending = state.pendingAction;
+  closeConfirmModal();
+  if (!pending || state.activeTaskId) return;
+
+  const { id, action, item } = pending;
+  state.activeTaskId = id;
+
+  if (action === "uninstall") {
+    disableAllButtons(id, "正在卸载...");
+    appendLog(`正在卸载目标软件: ${id} (${item.name || id})...`);
+    postCommand("Uninstall", { target_id: id });
+  } else {
+    const actionLabel = action === "upgrade" ? "升级" : "安装";
+    disableAllButtons(id, `正在${actionLabel}...`);
+    appendLog(`准备${actionLabel}目标: ${id} (${item.name || id})...`);
+    postCommand("Install", { target_id: id });
+  }
+}
+
+function installTarget(id) {
+  const item = state.softwares.find((s) => s.id === id);
+  const action = item && item.installed && hasNewerVersion(item.version, item.latest_version)
+    ? "upgrade"
+    : (item && item.installed ? "reinstall" : "install");
+  requestAction(id, action);
+}
+
+function requestUninstall(id, name) {
+  requestAction(id, "uninstall");
 }
 
 function executePendingUninstall() {
-  const id = state.pendingUninstallId;
-  closeConfirmModal();
-  if (!id || state.activeTaskId) return;
-  state.activeTaskId = id;
-  disableAllButtons(id, "正在卸载...");
-  appendLog(`正在卸载目标软件: ${id}...`);
-  postCommand("Uninstall", { target_id: id });
+  executePendingAction();
 }
 function getAppSvgIcon(id) {
   switch (id) {
@@ -342,27 +688,27 @@ function renderAll() {
     let actionButtonsHtml = "";
     if (!isInstalled) {
       actionButtonsHtml = `
-        <button class="btn-action btn-install-primary" data-id="${item.id}" onclick="installTarget('${item.id}')">
+        <button class="btn-action btn-install-primary" data-id="${item.id}" onclick="requestAction('${item.id}', 'install')">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
           一键安装
         </button>
       `;
     } else if (hasUpdate) {
       actionButtonsHtml = `
-        <button class="btn-action btn-uninstall" data-id="${item.id}" onclick="requestUninstall('${item.id}', '${item.name}')">
+        <button class="btn-action btn-uninstall" data-id="${item.id}" onclick="requestAction('${item.id}', 'uninstall')">
           卸载
         </button>
-        <button class="btn-action btn-upgrade" data-id="${item.id}" onclick="installTarget('${item.id}')">
+        <button class="btn-action btn-upgrade" data-id="${item.id}" onclick="requestAction('${item.id}', 'upgrade')">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           升级最新
         </button>
       `;
     } else {
       actionButtonsHtml = `
-        <button class="btn-action btn-uninstall" data-id="${item.id}" onclick="requestUninstall('${item.id}', '${item.name}')">
+        <button class="btn-action btn-uninstall" data-id="${item.id}" onclick="requestAction('${item.id}', 'uninstall')">
           卸载
         </button>
-        <button class="btn-action btn-install-primary" style="background: rgba(255,255,255,0.08); box-shadow:none;" data-id="${item.id}" onclick="installTarget('${item.id}')">
+        <button class="btn-action btn-install-primary" style="background: rgba(255,255,255,0.08); box-shadow:none;" data-id="${item.id}" onclick="requestAction('${item.id}', 'reinstall')">
           重新安装
         </button>
       `;
@@ -501,7 +847,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // 模态弹窗事件
   document.getElementById("modal-btn-cancel").addEventListener("click", closeConfirmModal);
-  document.getElementById("modal-btn-confirm").addEventListener("click", executePendingUninstall);
+  document.getElementById("modal-btn-confirm").addEventListener("click", executePendingAction);
+  const btnCopyCmd = document.getElementById("modal-btn-copy-cmd");
+  if (btnCopyCmd) {
+    btnCopyCmd.addEventListener("click", copyModalCommands);
+  }
 
   // 点击遮罩外部关闭
   document.getElementById("confirm-modal").addEventListener("click", (e) => {
