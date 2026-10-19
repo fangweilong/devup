@@ -17,6 +17,8 @@ impl NpmInstaller {
         F: FnMut(String) + Send + 'static,
     {
         let mut cmd = Command::new("cmd.exe");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
         cmd.arg("/c")
             .arg("npm")
             .arg("install")

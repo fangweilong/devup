@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+#[cfg(windows)]
+use winreg::RegKey;
 
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SoftwareStatus {
     pub id: String,
@@ -21,13 +29,21 @@ impl Detector {
         let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
 
         // 1. 先用 where.exe 探测（同时支持 .exe, .cmd, .bat 等扩展名）
-        let exists = Command::new("where.exe")
-            .arg(base_cmd)
+        let mut where1 = Command::new("where.exe");
+        where1.arg(base_cmd);
+        #[cfg(windows)]
+        where1.creation_flags(CREATE_NO_WINDOW);
+
+        let mut where2 = Command::new("where.exe");
+        where2.arg(cmd);
+        #[cfg(windows)]
+        where2.creation_flags(CREATE_NO_WINDOW);
+
+        let exists = where1
             .output()
             .map(|out| out.status.success())
             .unwrap_or(false)
-            || Command::new("where.exe")
-                .arg(cmd)
+            || where2
                 .output()
                 .map(|out| out.status.success())
                 .unwrap_or(false);
@@ -35,7 +51,6 @@ impl Detector {
         if !exists {
             return (false, None);
         }
-
         // 2. 尝试获取版本信息：优先直接执行，失败则回退到 cmd /c（支持 npm 全局安装的 .cmd / .bat 脚本）
         let try_run = |use_shell: bool| -> Option<String> {
             let mut command = if use_shell {
@@ -47,6 +62,9 @@ impl Detector {
                 c.arg(version_arg);
                 c
             };
+
+            #[cfg(windows)]
+            command.creation_flags(CREATE_NO_WINDOW);
 
             command.output().ok().and_then(|out| {
                 if out.status.success() {
@@ -70,12 +88,49 @@ impl Detector {
         (true, version)
     }
 
+    /// 检测 Windows Terminal 状态与版本
+    /// 避免直接运行 `wt.exe -v` / `--version` 触发 GUI 弹窗
+    pub fn check_windows_terminal() -> (bool, Option<String>) {
+        #[cfg(windows)]
+        {
+            // 优先从注册表 App Paths 读取安装路径并提取版本号
+            let query_reg = |hkey| -> Option<String> {
+                let root = RegKey::predef(hkey);
+                let subkey = root
+                    .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\wt.exe")
+                    .ok()?;
+                let path: String = subkey.get_value("").ok()?;
+                // 路径通常为: C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\wt.exe
+                if let Some(start) = path.find("Microsoft.WindowsTerminal_") {
+                    let sub = &path[start + "Microsoft.WindowsTerminal_".len()..];
+                    if let Some(end) = sub.find('_') {
+                        return Some(sub[..end].to_string());
+                    }
+                }
+                Some("已安装".to_string())
+            };
+
+            if let Some(ver) = query_reg(HKEY_CURRENT_USER).or_else(|| query_reg(HKEY_LOCAL_MACHINE)) {
+                return (true, Some(ver));
+            }
+        }
+
+        // 回退检查 where.exe 是否能找到 wt
+        let mut cmd = Command::new("where.exe");
+        cmd.arg("wt");
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let ok = cmd.output().map(|o| o.status.success()).unwrap_or(false);
+        (ok, if ok { Some("已安装".to_string()) } else { None })
+    }
+
     /// 综合全量实时检测所有环境与 Agent 状态
     pub fn detect_all() -> Vec<SoftwareStatus> {
         let mut list = Vec::new();
 
         // 1. 基础开发环境 (Prerequisites)
-        let (wt_ok, wt_ver) = Self::check_command("wt.exe", "--version");
+        let (wt_ok, wt_ver) = Self::check_windows_terminal();
         list.push(SoftwareStatus {
             id: "windows_terminal".into(),
             name: "Windows Terminal".into(),
@@ -85,7 +140,6 @@ impl Detector {
             installed: wt_ok,
             version: wt_ver,
         });
-
         let (pwsh_ok, pwsh_ver) = Self::check_command("pwsh.exe", "--version");
         list.push(SoftwareStatus {
             id: "powershell7".into(),

@@ -105,9 +105,15 @@ fn main() -> anyhow::Result<()> {
                     let _ = tx_for_ipc.send(AppEvent::ProxyDetected { proxy });
                 }
                 Ok(IpcCommand::OpenUrl { url }) => {
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/c", "start", "", &url])
-                        .spawn();
+                    #[allow(unused_mut)]
+                    let mut cmd = std::process::Command::new("cmd");
+                    cmd.args(["/c", "start", "", &url]);
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        cmd.creation_flags(0x08000000);
+                    }
+                    let _ = cmd.spawn();
                 }
                 Err(err) => {
                     eprintln!("解析 IPC 指令失败: {:?}, 原报文: {}", err, msg);

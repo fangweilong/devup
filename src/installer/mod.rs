@@ -93,7 +93,7 @@ impl InstallerEngine {
             }
 
             "git" => {
-                let raw_url = "https://github.com/git-for-windows/git/releases/download/v2.47.0.windows.2/Git-2.47.0.2-64-bit.exe";
+                let raw_url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe";
                 send_log("正在解析 Git for Windows 国内加速地址...".into());
                 let download_url = find_fastest_github_url(&client, raw_url).await;
 
@@ -105,10 +105,19 @@ impl InstallerEngine {
                 .await?;
 
                 send_log("正在后台静默安装 Git...".into());
-                let out = tokio::process::Command::new(&dest)
-                    .args(["/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-", "/CLOSEAPPLICATIONS"])
-                    .output()
-                    .await?;
+                let mut cmd = tokio::process::Command::new(&dest);
+                cmd.args([
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/NORESTART",
+                    "/NOCANCEL",
+                    "/SP-",
+                    "/CLOSEAPPLICATIONS",
+                ]);
+                #[cfg(windows)]
+                cmd.creation_flags(0x08000000);
+
+                let out = cmd.output().await?;
                 if !out.status.success() {
                     bail!("Git 静默安装异常: {:?}", out.status.code());
                 }

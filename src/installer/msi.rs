@@ -8,6 +8,8 @@ impl WindowsInstaller {
     /// 静默安装 MSI 安装包
     pub async fn install_msi(msi_path: &Path, extra_args: &[&str]) -> Result<()> {
         let mut cmd = Command::new("msiexec.exe");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
         cmd.arg("/i")
             .arg(msi_path)
             .arg("/quiet")
@@ -39,7 +41,10 @@ impl WindowsInstaller {
             package_path.display()
         );
 
-        let output = Command::new("powershell.exe")
+        let mut cmd = Command::new("powershell.exe");
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000);
+        let output = cmd
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
             .output()
             .await
