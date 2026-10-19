@@ -17,23 +17,38 @@ pub struct Detector;
 impl Detector {
     /// 实时检测命令是否存在并获取版本号（纯内存执行，零注册表污染）
     pub fn check_command(cmd: &str, version_arg: &str) -> (bool, Option<String>) {
-        // 先用 where.exe 探测是否存在于 PATH
+        // 去除可能的 .exe 后缀用于通用探测
+        let base_cmd = cmd.strip_suffix(".exe").unwrap_or(cmd);
+
+        // 1. 先用 where.exe 探测（同时支持 .exe, .cmd, .bat 等扩展名）
         let exists = Command::new("where.exe")
-            .arg(cmd)
+            .arg(base_cmd)
             .output()
             .map(|out| out.status.success())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || Command::new("where.exe")
+                .arg(cmd)
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false);
 
         if !exists {
             return (false, None);
         }
 
-        // 尝试获取版本信息
-        let version = Command::new(cmd)
-            .arg(version_arg)
-            .output()
-            .ok()
-            .and_then(|out| {
+        // 2. 尝试获取版本信息：优先直接执行，失败则回退到 cmd /c（支持 npm 全局安装的 .cmd / .bat 脚本）
+        let try_run = |use_shell: bool| -> Option<String> {
+            let mut command = if use_shell {
+                let mut c = Command::new("cmd.exe");
+                c.args(["/c", base_cmd, version_arg]);
+                c
+            } else {
+                let mut c = Command::new(cmd);
+                c.arg(version_arg);
+                c
+            };
+
+            command.output().ok().and_then(|out| {
                 if out.status.success() {
                     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if s.is_empty() {
@@ -48,8 +63,10 @@ impl Detector {
                 } else {
                     None
                 }
-            });
+            })
+        };
 
+        let version = try_run(false).or_else(|| try_run(true));
         (true, version)
     }
 
