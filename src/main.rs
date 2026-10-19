@@ -75,6 +75,18 @@ fn main() -> anyhow::Result<()> {
         builder = builder.with_window_icon(Some(icon));
     }
 
+    // macOS: 隐藏原生标题栏视觉样式，让 WebView 内容延伸到红绿灯按钮区域，
+    // 与应用自身的深色头部融为一体（tao 内部已处理 WKWebView 下背景拖拽移动窗口）
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::WindowBuilderExtMacOS;
+        builder = builder
+            .with_titlebar_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_title_hidden(true)
+            .with_movable_by_window_background(true);
+    }
+
     let window = builder.build(&event_loop)?;
 
     let html_content = build_inlined_html();

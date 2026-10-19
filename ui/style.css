@@ -44,6 +44,13 @@ header {
   z-index: 10;
 }
 
+/* macOS 无边框融合模式：内容延伸至红绿灯标题栏区域，
+   头部需为顶部 28px 标题栏热区与交通灯预留垂直空间 */
+body.is-mac header {
+  padding-top: 30px;
+  padding-bottom: 12px;
+}
+
 .logo-area {
   display: flex;
   align-items: center;

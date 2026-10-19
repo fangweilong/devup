@@ -22,6 +22,12 @@ function openExternal(url) {
   postCommand("OpenUrl", { url });
 }
 
+// macOS 透明标题栏融合模式下，为头部预留红绿灯与标题栏热区空间
+const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform || "") || /Mac OS X/.test(navigator.userAgent || "");
+if (isMac) {
+  document.body.classList.add("is-mac");
+}
+
 // 供 Rust 回调的全局事件接收器
 window.onEvent = function (event) {
   switch (event.type) {
