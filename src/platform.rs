@@ -4,7 +4,9 @@
 //! (通常只有 /usr/bin:/bin:/usr/sbin:/sbin)，无法直接找到 brew、
 //! node、npm 等用户级命令，因此需要显式扩展搜索目录与子进程 PATH。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::path::Path;
 
 #[cfg(windows)]
 use std::process::Command;
@@ -44,13 +46,14 @@ pub fn extra_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn extra_search_dirs() -> Vec<PathBuf> {
     Vec::new()
 }
 
 /// 为派生子进程构造的 PATH：继承当前进程 PATH 并追加常用安装目录，
 /// 保证 npm 全局 shim (claude/codex 等) 与 brew/node 均可被 shebang 解析。
+#[cfg(unix)]
 pub fn child_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let mut parts: Vec<String> = Vec::new();
@@ -61,7 +64,7 @@ pub fn child_path() -> String {
         }
     }
     parts.push(current);
-    parts.join(if cfg!(windows) { ";" } else { ":" })
+    parts.join(":")
 }
 
 /// 在 PATH 与补充目录中查找可执行命令（类 which），返回绝对路径

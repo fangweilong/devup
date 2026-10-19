@@ -2,8 +2,6 @@ use anyhow::{bail, Context, Result};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use crate::network::mirrors::NPM_MIRROR_REGISTRY;
 
 /// 构造跨平台的命令包装器：Windows 经由 cmd.exe /c（解析 npm 的 .cmd shim），
