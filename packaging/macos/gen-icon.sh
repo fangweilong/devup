@@ -3,7 +3,8 @@
 #
 #   bash packaging/macos/gen-icon.sh
 #
-# 光栅化优先用 rsvg-convert（brew install librsvg），没有则退回 macOS 自带的 QuickLook。
+# 渲染必须用 rsvg-convert（brew install librsvg）：macOS 自带的 QuickLook 会把
+# SVG 的透明背景拍平成纯白，四角变成不透明，Dock 里就是一圈白边（已踩过）。
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,18 +14,17 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 png="$work/icon_1024.png"
-if command -v rsvg-convert >/dev/null 2>&1; then
-  rsvg-convert -w 1024 -h 1024 -o "$png" "$src"
-else
-  # QuickLook 渲染：要求 SVG 自身声明 width/height=1024，否则会被缩放到画布一角。
-  qlmanage -t -s 1024 -o "$work" "$src" >/dev/null
-  mv "$work/icon.png" "$png" 2>/dev/null || mv "$work/$(basename "$src").png" "$png"
-fi
+command -v rsvg-convert >/dev/null 2>&1 || {
+  echo "❌ 需要 rsvg-convert（保留 alpha 的 SVG 渲染器）：brew install librsvg" >&2
+  exit 1
+}
+rsvg-convert -w 1024 -h 1024 -o "$png" "$src"
 
 sips -g pixelWidth -g pixelHeight "$png" | grep -q '1024' || {
   echo "❌ 1024px 母图渲染异常: $png" >&2
   exit 1
 }
+python3 "$here/check-alpha.py" "$png"
 
 iconset="$work/AppIcon.iconset"
 mkdir -p "$iconset"
