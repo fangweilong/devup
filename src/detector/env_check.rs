@@ -1,3 +1,4 @@
+use crate::detector::node_source;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
@@ -27,6 +28,17 @@ pub struct SoftwareStatus {
     pub latest_version: Option<String>,
     pub install_method: Option<String>,
     pub default_channel: String, // 安装方式说明，例如 "WinGet / 微软官方MSIXBundle"、"国内官方npmmirror镜像 / 原生安装器" 等
+    /// 按 D4「显示但不代管」：这份 runtime 由哪个版本管理器托管（取 `ManagerKind::label()`，
+    /// 如 "nvm"）。GUI 的 PATH 解析不到 node 时，卡片据此显示「由 nvm 托管」而不是谎报「未安装」，
+    /// 但 DevUp 不因此认为那份 runtime 可由它操作（`installed` 的判定口径不受这个字段影响）。
+    /// 非 Node 卡片恒为 `None`。
+    #[serde(default)]
+    pub managed_by: Option<String>,
+    /// 主托管方自己装了哪些版本，语义降序、形如 "26.12.0"（展示方自行补 `v`）。
+    /// 只属于 `managed_by` 那一个管理器：本机 nvm 与 volta 共存，把 volta 的版本混进来就是假信息。
+    /// 「本机还有哪些管理器」请遍历 `node_source::NodeEnv::managers`，那里才是唯一真相源。
+    #[serde(default)]
+    pub managed_versions: Vec<String>,
 }
 
 pub struct Detector;
@@ -258,6 +270,86 @@ impl Detector {
         }
     }
 
+    /// 选出卡片「由 X 托管」的那一个主托管方（规则定死于设计文档 D4 / 实施计划 §2.7）。
+    ///
+    /// 纯函数：不读环境变量、不碰文件系统、不起进程，`detect()` 的结论全部由参数给出，
+    /// 因此四条规则可以表驱动覆盖。与 `node_source::pick_managed_versions` 的分工是：
+    /// 那边回答「生效那份归谁」（owner 不命中就留空），这边回答「卡片该说谁在托管」——
+    /// GUI 认不出 owner 时也得给用户一个答案，于是按「谁装的版本最高」挑一个主托管方，
+    /// **其余管理器不进 `managed_by`**（保持单一标签，不拼成 "nvm, volta"）。
+    ///
+    /// `Brew` / `SystemPkg` 返回 `None`：那两种情况下生效的 runtime 就在 DevUp 能直接操作的
+    /// 位置上，说「托管中」反而是假陈述（渠道信息由 `install_method` 如实给出）。
+    fn pick_managed_by(
+        owner: node_source::NodeOwner,
+        managers: &[node_source::Manager],
+    ) -> Option<(&'static str, Vec<String>)> {
+        match owner {
+            // owner 命中那一个：只报它自己的版本，别的管理器一个字符都不许混进来
+            node_source::NodeOwner::Manager(kind) => managers
+                .iter()
+                .find(|m| m.kind == kind)
+                .map(|m| (m.kind.label(), m.versions.clone())),
+            // GUI 解析不到 node（nvm-only 机器从 Finder 启动的常态）或归属不明：
+            // 主托管方 = 自己装了最高语义版本的那一个；一个版本都没有就退回清单第一个
+            node_source::NodeOwner::None | node_source::NodeOwner::Unknown => {
+                let mut best: Option<(&node_source::Manager, Vec<u64>)> = None;
+                for m in managers {
+                    let Some(key) = m.versions.first().map(|v| Self::version_key(v)) else {
+                        continue;
+                    };
+                    // 各管理器的 versions 已是降序，所以第一个就是它的最高版本
+                    let take = match &best {
+                        Some((_, best_key)) => key > *best_key,
+                        None => true,
+                    };
+                    if take {
+                        best = Some((m, key));
+                    }
+                }
+                match best {
+                    Some((m, _)) => Some((m.kind.label(), m.versions.clone())),
+                    None => managers.first().map(|m| (m.kind.label(), Vec::new())),
+                }
+            }
+            node_source::NodeOwner::Brew | node_source::NodeOwner::SystemPkg => None,
+        }
+    }
+
+    /// 语义版本比较键：按 `.` 切段取数值，逐段字典序比较（`[26,..] > [9,..]`，
+    /// 纯字符串比较会把 9 排到 26 前面）；段数不同的短一方视为更小。
+    ///
+    /// 与 `node_source` 私有的 `version_key` 同规则——那边没导出，此处展示侧自用一份，
+    /// 两边各写一次正是计划 §2.2 警告过的漂移风险，故把规则写进注释，改动须同步。
+    fn version_key(v: &str) -> Vec<u64> {
+        v.trim()
+            .trim_start_matches(['v', 'V'])
+            .split('.')
+            .map(|seg| seg.parse::<u64>().unwrap_or(0))
+            .collect()
+    }
+
+    /// 把 Node 所有权结论落到 nodejs 卡片上：托管展示字段 + `install_method` 口径修正。
+    ///
+    /// 只喂 nodejs 这一张卡片。`infer_install_method` 的字符串猜测继续服务其余卡片：
+    /// Agent 落在 `~/.nvm/versions/node/*/bin` 下本来就是 npm 全局包，判 `"npm"` 没有错，
+    /// 错的是拿同一套字面规则去说「node 这个 runtime 是 npm 装的」。
+    fn apply_node_ownership(status: &mut SoftwareStatus, env: &node_source::NodeEnv) {
+        if let Some((label, versions)) = Self::pick_managed_by(env.owner, &env.managers) {
+            status.managed_by = Some(label.to_string());
+            status.managed_versions = versions;
+        }
+        // Node 卡片的渠道按 owner 说真话：管理器 → 管理器名，brew → "brew"；
+        // 系统包 / 归属不明 / 无 node 时保留原有路径推断（mac "pkg" / win "msi" 本来就是对的）
+        match env.owner {
+            node_source::NodeOwner::Manager(kind) => {
+                status.install_method = Some(kind.label().to_string())
+            }
+            node_source::NodeOwner::Brew => status.install_method = Some("brew".to_string()),
+            _ => {}
+        }
+    }
+
     /// 查询指定组件已记录的最新版本（优先缓存，缺失回退内置基线）
     pub fn get_latest_version(id: &str) -> Option<String> {
         if let Ok(guard) = VERSION_CACHE.lock() {
@@ -477,6 +569,9 @@ impl Detector {
             latest_version: Self::get_latest_version(id),
             install_method: method,
             default_channel: default_channel.into(),
+            // 托管展示字段只有 nodejs 卡片会有值，由 apply_node_ownership 覆盖
+            managed_by: None,
+            managed_versions: Vec::new(),
         }
     }
 
@@ -484,6 +579,13 @@ impl Detector {
     pub fn detect_all() -> Vec<SoftwareStatus> {
         // 探测前先刷新进程 PATH 环境变量
         crate::platform::refresh_process_path();
+
+        // Node 所有权取证：**整轮只探这一次**（detect() 背着 pkgutil / npm / node 的子进程
+        // 等待，每卡片各调一遍会把一次刷新变成 N 次）。同一份结论既喂 nodejs 卡片的托管展示，
+        // 也用来修正 install_method 口径。为什么不在这里 spawn_blocking：本函数是同步的，
+        // 而同步函数无论把活儿丢给谁，最终都要把调用线程等到结果出来为止；调用侧的线程
+        // 归属结论见 main.rs 与任务 E 的报告（启动首轮在 UI 主线程，Refresh 在 tokio worker）。
+        let node_env = node_source::detect();
 
         let mut list = Vec::new();
 
@@ -502,6 +604,8 @@ impl Detector {
                 latest_version: Self::get_latest_version("windows_terminal"),
                 install_method: wt_method,
                 default_channel: "WinGet / 微软官方MSIXBundle".into(),
+                managed_by: None,
+                managed_versions: Vec::new(),
             });
 
             list.push(Self::probe_software(
@@ -515,7 +619,7 @@ impl Detector {
                 "GitHub加速镜像 / WinGet",
             ));
 
-            list.push(Self::probe_software(
+            let mut node_card = Self::probe_software(
                 "nodejs",
                 "Node.js (LTS)",
                 "env",
@@ -524,7 +628,9 @@ impl Detector {
                 "node.exe",
                 "msi",
                 "阿里npmmirror镜像官方MSI",
-            ));
+            );
+            Self::apply_node_ownership(&mut node_card, &node_env);
+            list.push(node_card);
 
             list.push(Self::probe_software(
                 "git",
@@ -551,7 +657,7 @@ impl Detector {
                 "官方脚本 / 清华镜像加速",
             ));
 
-            list.push(Self::probe_software(
+            let mut node_card = Self::probe_software(
                 "nodejs",
                 "Node.js (LTS)",
                 "env",
@@ -560,7 +666,9 @@ impl Detector {
                 "node",
                 "pkg",
                 "Homebrew / 阿里npmmirror官方PKG",
-            ));
+            );
+            Self::apply_node_ownership(&mut node_card, &node_env);
+            list.push(node_card);
 
             list.push(Self::probe_software(
                 "git",
@@ -637,6 +745,256 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detector::node_source::{Manager, ManagerKind, NodeEnv, NodeOwner};
+    use std::path::PathBuf;
+
+    /// 构造一个管理器条目：版本按传入目录名（`v26.12.0` 这种形态）清洗后降序排好，
+    /// 与真实采集产出的 `Manager` 形状一致，免得测试自己手工维护顺序
+    fn mgr(kind: ManagerKind, root: &str, versions: &[&str]) -> Manager {
+        let mut vs: Vec<String> = versions.iter().map(|v| v.to_string()).collect();
+        vs.sort_by(|a, b| Detector::version_key(b).cmp(&Detector::version_key(a)));
+        Manager {
+            kind,
+            root: PathBuf::from(root),
+            versions: vs,
+        }
+    }
+
+    /// 把期望值折成与 `pick_managed_by` 相同的类型，避免逐字段手写比较
+    fn want(label: &'static str, vs: &[&'static str]) -> Option<(&'static str, Vec<String>)> {
+        Some((label, vs.iter().map(|v| v.to_string()).collect()))
+    }
+
+    /// 主托管方选择的四条规则（D4 / 计划 §2.7），表驱动。
+    /// 本机现场就是第一条与第二名的对照：nvm 三个版本 + volta 两个版本并存。
+    #[test]
+    fn pick_managed_by_table() {
+        let nvm = mgr(
+            ManagerKind::Nvm,
+            "/Users/u/.nvm",
+            &["26.12.0", "24.22.0", "16.20.2"],
+        );
+        let volta = mgr(ManagerKind::Volta, "/Users/u/.volta", &["20.15.0", "16.14.2"]);
+        let bare_fnm = mgr(ManagerKind::Fnm, "/Users/u/.fnm", &[]);
+        let bare_proto = mgr(ManagerKind::Proto, "/Users/u/.proto", &[]);
+
+        struct Case {
+            name: &'static str,
+            owner: NodeOwner,
+            managers: Vec<Manager>,
+            want: Option<(&'static str, Vec<String>)>,
+        }
+
+        let cases = [
+            // 规则 1：owner 命中那一个，只取那一个
+            Case {
+                name: "owner=Manager(Nvm)：只报 nvm 的三个版本，volta 一个字符都不混",
+                owner: NodeOwner::Manager(ManagerKind::Nvm),
+                managers: vec![nvm.clone(), volta.clone()],
+                want: want("nvm", &["26.12.0", "24.22.0", "16.20.2"]),
+            },
+            Case {
+                name: "owner=Manager(Volta)：只出 volta 的版本（本机若生效的是 volta 就是这条）",
+                owner: NodeOwner::Manager(ManagerKind::Volta),
+                managers: vec![nvm.clone(), volta.clone()],
+                want: want("Volta", &["20.15.0", "16.14.2"]),
+            },
+            // 规则 2：owner 定位不到但有管理器 → 版本最高的那个当主，其余不进 managed_by
+            Case {
+                name: "owner=None：nvm(26.12.0) 压过 volta(20.15.0)，标签只有 nvm",
+                owner: NodeOwner::None,
+                // 故意把 volta 放在清单前面，证明主托管方是按版本选的、不是按顺序
+                managers: vec![volta.clone(), nvm.clone()],
+                want: want("nvm", &["26.12.0", "24.22.0", "16.20.2"]),
+            },
+            Case {
+                name: "owner=Unknown：与 None 同规则",
+                owner: NodeOwner::Unknown,
+                managers: vec![volta.clone(), nvm.clone()],
+                want: want("nvm", &["26.12.0", "24.22.0", "16.20.2"]),
+            },
+            Case {
+                name: "版本按数值比、不按字典序（9.x 不得压过 26.x）",
+                owner: NodeOwner::None,
+                managers: vec![
+                    mgr(ManagerKind::Mise, "/Users/u/.local/share/mise", &["9.9.9"]),
+                    mgr(ManagerKind::Asdf, "/Users/u/.asdf", &["26.0.0"]),
+                ],
+                want: want("asdf", &["26.0.0"]),
+            },
+            Case {
+                name: "段数少的视为更小（24.22.0 > 24）",
+                owner: NodeOwner::None,
+                managers: vec![
+                    mgr(ManagerKind::N, "/usr/local", &["24"]),
+                    mgr(ManagerKind::Scoop, "/Users/u/scoop/apps/nodejs", &["24.22.0"]),
+                ],
+                want: want("Scoop", &["24.22.0"]),
+            },
+            // 规则 3：所有管理器都没版本 → 取清单第一个，版本为空
+            Case {
+                name: "全无版本：退回清单第一个（fnm），managed_versions 为空",
+                owner: NodeOwner::None,
+                managers: vec![bare_fnm.clone(), bare_proto.clone()],
+                want: want("fnm", &[]),
+            },
+            Case {
+                name: "有版本的排在后面也一样：有版本者优先于清单顺序",
+                owner: NodeOwner::Unknown,
+                managers: vec![bare_fnm.clone(), volta.clone()],
+                want: want("Volta", &["20.15.0", "16.14.2"]),
+            },
+            // 规则 4：没有管理器 → None
+            Case {
+                name: "无管理器：None（老 config 机器 / 裸 MSI 机器就是这个形态）",
+                owner: NodeOwner::None,
+                managers: vec![],
+                want: None,
+            },
+            // 防御与不托管的两种归属
+            Case {
+                name: "owner=Manager(Nvm) 但清单里没有 nvm：不给假标签",
+                owner: NodeOwner::Manager(ManagerKind::Nvm),
+                managers: vec![volta.clone()],
+                want: None,
+            },
+            Case {
+                name: "owner=Brew：不算托管（那份 runtime DevUp 能直接操作）",
+                owner: NodeOwner::Brew,
+                managers: vec![nvm.clone()],
+                want: None,
+            },
+            Case {
+                name: "owner=SystemPkg：不算托管",
+                owner: NodeOwner::SystemPkg,
+                managers: vec![nvm.clone()],
+                want: None,
+            },
+        ];
+
+        for c in cases {
+            let got = Detector::pick_managed_by(c.owner, &c.managers);
+            assert_eq!(got, c.want, "用例失败: {}", c.name);
+        }
+    }
+
+    /// 线上一行 JSON 的形状：新增两字段必须蛇形命名、排在 default_channel 之后，
+    /// `managed_by` 为 None 时序列化成显式 null（不是字段消失），前端据此判空。
+    /// 手法与任务 C 的 Guidance 快照同源：拿真实序列化结果钉死，而不是比对结构体。
+    /// 测试本机的卡片构造器：不借 `probe_software`（那会起真实子进程、结果随本机环境漂移）
+    fn status(
+        id: &str,
+        installed: bool,
+        install_method: Option<&str>,
+        managed_by: Option<&str>,
+        managed_versions: &[&str],
+    ) -> SoftwareStatus {
+        SoftwareStatus {
+            id: id.into(),
+            name: "Node.js (LTS)".into(),
+            category: "env".into(),
+            description: "d".into(),
+            repo_url: "https://nodejs.org".into(),
+            installed,
+            version: None,
+            latest_version: Some("v24.21.0".into()),
+            install_method: install_method.map(str::to_string),
+            default_channel: "c".into(),
+            managed_by: managed_by.map(str::to_string),
+            managed_versions: managed_versions.iter().map(|v| v.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_managed_fields_json_snapshot() {
+        let status = status(
+            "nodejs",
+            false,
+            Some("nvm"),
+            Some("nvm"),
+            &["26.12.0", "24.22.0", "16.20.2"],
+        );
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(
+            json,
+            r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d","repo_url":"https://nodejs.org","installed":false,"version":null,"latest_version":"v24.21.0","install_method":"nvm","default_channel":"c","managed_by":"nvm","managed_versions":["26.12.0","24.22.0","16.20.2"]}"#
+        );
+    }
+
+    /// 未托管的卡片（含 Agent 卡片）也要有稳定形状：显式 null + 空数组
+    #[test]
+    fn test_managed_fields_json_snapshot_unmanaged() {
+        let status = status("git", true, Some("brew"), None, &[]);
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(
+            json.ends_with(r#""managed_by":null,"managed_versions":[]}"#),
+            "实际: {json}"
+        );
+    }
+
+    /// 老形状（缺这两个字段）必须还能反序列化：字段带 `#[serde(default)]`，
+    /// 前端/M1 的回放路径不会因为多两个字段就整体解析失败
+    #[test]
+    fn test_managed_fields_deserialize_without_them() {
+        let legacy = r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d",
+            "repo_url":"https://nodejs.org","installed":true,"version":"26.12.0",
+            "latest_version":"v24.21.0","install_method":"nvm","default_channel":"c"}"#;
+        let parsed: SoftwareStatus = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.managed_by, None);
+        assert!(parsed.managed_versions.is_empty());
+    }
+
+    /// install_method 口径修正 + `installed` 判定不受影响（D4 只改呈现，不改事实判定）
+    #[test]
+    fn apply_node_ownership_scopes_method_to_owner() {
+        let nvm = mgr(
+            ManagerKind::Nvm,
+            "/Users/u/.nvm",
+            &["26.12.0", "24.22.0", "16.20.2"],
+        );
+        let volta = mgr(ManagerKind::Volta, "/Users/u/.volta", &["20.15.0", "16.14.2"]);
+
+        // 本机从 Finder 启动的形态：GUI 里没有 node，但 nvm 明明装着
+        let mut gui = status("nodejs", false, None, None, &[]);
+        let env = NodeEnv {
+            owner: NodeOwner::Manager(ManagerKind::Nvm),
+            managers: vec![nvm.clone(), volta.clone()],
+            ..Default::default()
+        };
+        Detector::apply_node_ownership(&mut gui, &env);
+        assert_eq!(gui.managed_by.as_deref(), Some("nvm"));
+        assert_eq!(gui.managed_versions, vec!["26.12.0", "24.22.0", "16.20.2"]);
+        // 谎报「npm 装的」这条老口径必须不再出现在 Node 卡片上
+        assert_eq!(gui.install_method.as_deref(), Some("nvm"));
+        // D4 不改事实判定：能否执行到 node 仍然是 false
+        assert!(!gui.installed);
+
+        // brew 生效、nvm 也装着：卡片说的是 brew，不是「由 nvm 托管」
+        let mut brew = status("nodejs", true, Some("brew"), None, &[]);
+        let brew_env = NodeEnv {
+            owner: NodeOwner::Brew,
+            managers: vec![nvm.clone()],
+            ..Default::default()
+        };
+        Detector::apply_node_ownership(&mut brew, &brew_env);
+        assert_eq!(brew.managed_by, None);
+        assert!(brew.managed_versions.is_empty());
+        assert_eq!(brew.install_method.as_deref(), Some("brew"));
+
+        // 归属不明 + 系统包：install_method 保留原推断，不被覆盖成假标签
+        let mut unknown = status("nodejs", true, Some("pkg"), None, &[]);
+        let unknown_env = NodeEnv {
+            owner: NodeOwner::Unknown,
+            managers: vec![volta.clone()],
+            ..Default::default()
+        };
+        Detector::apply_node_ownership(&mut unknown, &unknown_env);
+        // owner=Unknown 时按规则 2 仍要给一个主托管方（volta 是唯一有版本的管理器）
+        assert_eq!(unknown.managed_by.as_deref(), Some("Volta"));
+        assert_eq!(unknown.managed_versions, vec!["20.15.0", "16.14.2"]);
+        // 但渠道那栏不改：Unknown 不是「认出了管理器」，而是「认不出」
+        assert_eq!(unknown.install_method.as_deref(), Some("pkg"));
+    }
 
     #[test]
     fn test_clean_version_string() {
@@ -646,6 +1004,32 @@ mod tests {
         assert_eq!(Detector::clean_version_string("git version 2.55.0.windows.3"), "2.55.0");
         assert_eq!(Detector::clean_version_string("v24.21.0"), "24.21.0");
         assert_eq!(Detector::clean_version_string("Homebrew 4.5.11"), "4.5.11");
+    }
+
+    /// D4 的本机验收口径：真实 `detect()` 结果上打印卡片会用的三个值
+    /// `cargo test -- --ignored --nocapture dump_managed_display`
+    ///
+    /// 本机预期（计划 §2.7 的数据点）：owner=Manager(Nvm) → `managed_by = "nvm"`、
+    /// `managed_versions = ["26.12.0","24.22.0","16.20.2"]`，**不含** volta 的两个版本；
+    /// `installed` 取决于本次执行环境能否真的跑起 node（从终端跑就是 true，
+    /// Finder 启动的 GUI 场景是 false——那正是 D4 要用「由 nvm 托管」取代「未安装」的现场）。
+    /// 附带打印一次 detect_all 的用时：detect() 内含子进程等待，这个数字决定刷新路径的观感。
+    #[test]
+    #[ignore]
+    fn dump_managed_display() {
+        let started = std::time::Instant::now();
+        let list = Detector::detect_all();
+        let elapsed = started.elapsed();
+
+        let card = list
+            .iter()
+            .find(|s| s.id == "nodejs")
+            .expect("detect_all 未产出 nodejs 卡片");
+        println!("(managed_by, managed_versions, installed) = ({:?}, {:?}, {})",
+            card.managed_by, card.managed_versions, card.installed);
+        println!("  install_method = {:?}  version = {:?}", card.install_method, card.version);
+        println!("  detect_all() 用时 {elapsed:?}（{count} 张卡片，其中 node 取证 1 次）",
+            count = list.len());
     }
 
     /// 人工核对全量探测结果：cargo test -- --ignored --nocapture

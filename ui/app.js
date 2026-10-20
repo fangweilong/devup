@@ -1169,12 +1169,18 @@ function renderAll() {
     card.dataset.targetId = item.id;
 
     const isInstalled = item.installed;
-    const hasUpdate = isInstalled && hasNewerVersion(item.version, item.latest_version);
+    // D4「显示但不代管」：后端认出托管方时，这张卡片既不算「可升级」也不算「已完成」——
+    // DevUp 不认为那份 runtime 归自己管，所以拿 hasNewerVersion 给它判色就是假承诺。
+    const isManaged = !!item.managed_by;
+    const hasUpdate = !isManaged && isInstalled && hasNewerVersion(item.version, item.latest_version);
 
     let badgeClass = "badge-missing";
     let badgeText = "未安装";
 
-    if (isInstalled) {
+    if (isManaged) {
+      badgeClass = "badge-managed";
+      badgeText = "托管中";
+    } else if (isInstalled) {
       if (hasUpdate) {
         badgeClass = "badge-update-available";
         badgeText = `可升级 · ${item.version || "已就绪"}`;
@@ -1183,6 +1189,11 @@ function renderAll() {
         badgeText = `最新 · ${item.version || "已就绪"}`;
       }
     }
+
+    // 托管方的版本取自 managed_versions[0]（后端已按语义降序）；一个版本都没扫到就只说托管方名字。
+    // 注意这与 item.version 不是一回事：后者是「GUI 真能执行到的那份」，装了 nvm 的 GUI 场景恒为 null。
+    const managedVer = item.managed_versions && item.managed_versions.length ? `v${item.managed_versions[0]}` : "";
+    const managedText = isManaged ? `由 ${item.managed_by} 托管${managedVer ? ` · ${managedVer}` : ""}` : "";
 
     const currentChannel = item.install_method ? item.install_method : "未检测到";
     const defaultChannel = item.default_channel || "官方默认通道";
@@ -1238,7 +1249,7 @@ function renderAll() {
       <div class="card-meta-list">
         <div class="meta-row">
           <span class="meta-label">已装版本 / 渠道:</span>
-          <span class="meta-val">${isInstalled ? (item.version || "已安装") + ` [${currentChannel}]` : "未安装"}</span>
+          <span class="meta-val">${isInstalled ? (item.version || "已安装") + ` [${currentChannel}]` : (isManaged ? managedText : "未安装")}</span>
         </div>
         <div class="meta-row">
           <span class="meta-label">官方最新版本:</span>

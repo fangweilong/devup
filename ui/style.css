@@ -597,6 +597,16 @@ main {
   border: 1px solid rgba(248, 81, 73, 0.25);
 }
 
+/* 托管中（D4「显示但不代管」）：语义是「有人在管，DevUp 不对这份 runtime 负责」，
+   所以既不是「需更新」(badge-update-available) 也不是「已是最新」(badge-installed)，
+   更不是失败——绝不取 --danger 红。调色与任务 C 的 .guidance-banner 同源：--warning 中性黄，
+   rgba(210,153,34,…) 即 #d29922 的分量写法（与该横幅一样留了字面量的既有口径）。 */
+.badge-managed {
+  background-color: rgba(210, 153, 34, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+}
+
 .card-desc {
   font-size: 13px;
   color: var(--text-muted);
