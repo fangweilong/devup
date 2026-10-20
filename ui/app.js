@@ -794,16 +794,35 @@ function getExecutionPlan(item, action) {
         const nodeVer = item.latest_version || "v24.22.0";
         if (isUninstall) {
           summary = "即将卸载 Node.js LTS 运行环境。";
-          commands = ['powershell.exe -NoProfile -Command "Get-Package -Name \'Node.js*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
-          notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
+          if (isMac) {
+            // 预览必须与后端同构：brew 装的走 brew 自己的账本，只有官方 PKG 落点才动 /usr/local。
+            // 0.3.6 起受版本管理器托管的机器会在护栏处被拒，根本执行不到这里。
+            commands = [
+              "brew uninstall node",
+              '# 备用回退（官方 PKG 装入时）: 清理 /usr/local 落点后 pkgutil --forget org.nodejs.node.pkg（需系统授权，托管路径自动跳过）'
+            ];
+            notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
+          } else {
+            commands = ['powershell.exe -NoProfile -Command "Get-Package -Name \'Node.js*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
+            notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
+          }
         } else {
           const opName = isUpgrade ? "升级" : (isReinstall ? "重装" : "安装");
-          summary = `从阿里 npmmirror 官方镜像下载 Node.js LTS (${nodeVer}) 并执行${opName}。`;
-          commands = [
-            `# 1. 下载 node-${nodeVer}-x64.msi`,
-            `msiexec.exe /i "%TEMP%\\devup-cache\\node-${nodeVer}-x64.msi" /quiet /norestart`
-          ];
-          notes = "静默安装后自动写入系统 PATH，提供全局 node 与 npm 命令。";
+          if (isMac) {
+            summary = `优先通过 Homebrew ${opName} Node.js LTS (${nodeVer}，清华 bottle 加速)；未装 Homebrew 时回落阿里 npmmirror 官方 PKG。`;
+            commands = [
+              "brew install node  # 本机已有 node formula 时自动改用 brew upgrade node",
+              `# 备用回退（无 Homebrew 时）: 下载 node-${nodeVer}-arm64.pkg 后 /usr/sbin/installer -pkg <file> -target /（弹出系统授权框）`
+            ];
+            notes = "Node 由版本管理器（nvm / fnm / Volta 等）托管时，DevUp 不代为安装/覆盖，改为给出终端指引命令。";
+          } else {
+            summary = `从阿里 npmmirror 官方镜像下载 Node.js LTS (${nodeVer}) 并执行${opName}。`;
+            commands = [
+              `# 1. 下载 node-${nodeVer}-x64.msi`,
+              `msiexec.exe /i "%TEMP%\\devup-cache\\node-${nodeVer}-x64.msi" /quiet /norestart`
+            ];
+            notes = "静默安装后自动写入系统 PATH，提供全局 node 与 npm 命令。";
+          }
         }
       }
       break;
@@ -811,6 +830,23 @@ function getExecutionPlan(item, action) {
     case "git":
       {
         const gitVer = item.latest_version || "最新版";
+        if (isMac) {
+          // mac 后端没有 winget/Git for Windows 这回事：有 brew 走 brew，没有就唤起 CLT 安装框
+          if (isUninstall) {
+            summary = "即将通过 Homebrew 卸载 git formula。";
+            commands = ["brew uninstall git"];
+            notes = "若 git 由 Xcode 命令行工具 (/usr/bin/git) 提供，则随系统管理、不支持单独卸载，DevUp 不会执行删除。";
+          } else {
+            const opName = isUpgrade ? "升级" : (isReinstall ? "重装" : "安装");
+            summary = `通过 Homebrew ${opName} Git (${gitVer}，清华 bottle 加速)。`;
+            commands = [
+              "brew install git  # 本机已有 git formula 时自动改用 brew upgrade git",
+              '# 备用回退（无 Homebrew 时）: xcode-select --install 唤起 Command Line Tools 安装对话框'
+            ];
+            notes = "Homebrew 路径无需提权；Command Line Tools 由系统安装对话框完成，装完后点「刷新状态」即可看到结果。";
+          }
+          break;
+        }
         if (isUninstall) {
           summary = "即将卸载 Git for Windows 版本管理工具。";
           commands = isWinget
@@ -842,7 +878,9 @@ function getExecutionPlan(item, action) {
           summary = "即将卸载 Claude Code 全局 npm 包并清理残留二进制。";
           commands = [
             "npm uninstall -g @anthropic-ai/claude-code",
-            "# 自动清理可能存在的原生文件: %USERPROFILE%\\.local\\bin\\claude.exe"
+            isMac
+              ? "# 自动清理可能存在的原生文件: ~/.local/bin/claude"
+              : "# 自动清理可能存在的原生文件: %USERPROFILE%\\.local\\bin\\claude.exe"
           ];
           notes = "卸载后全局 claude 命令将被移除，用户本地配置与项目上下文保持不变。";
         } else if (isUpgrade && item.installed) {
