@@ -295,7 +295,9 @@ impl Detector {
             node_source::NodeOwner::None | node_source::NodeOwner::Unknown => {
                 let mut best: Option<(&node_source::Manager, Vec<u64>)> = None;
                 for m in managers {
-                    let Some(key) = m.versions.first().map(|v| Self::version_key(v)) else {
+                    // 比较键复用 `node_source::version_key`（数值逐段比，字典序会把 9 排到 26 前面）：
+                    // 展示侧与采集侧共用一份，避免计划 §2.2 警告的「两处各写一遍、迟早给出两种结论」
+                    let Some(key) = m.versions.first().map(|v| node_source::version_key(v)) else {
                         continue;
                     };
                     // 各管理器的 versions 已是降序，所以第一个就是它的最高版本
@@ -314,19 +316,6 @@ impl Detector {
             }
             node_source::NodeOwner::Brew | node_source::NodeOwner::SystemPkg => None,
         }
-    }
-
-    /// 语义版本比较键：按 `.` 切段取数值，逐段字典序比较（`[26,..] > [9,..]`，
-    /// 纯字符串比较会把 9 排到 26 前面）；段数不同的短一方视为更小。
-    ///
-    /// 与 `node_source` 私有的 `version_key` 同规则——那边没导出，此处展示侧自用一份，
-    /// 两边各写一次正是计划 §2.2 警告过的漂移风险，故把规则写进注释，改动须同步。
-    fn version_key(v: &str) -> Vec<u64> {
-        v.trim()
-            .trim_start_matches(['v', 'V'])
-            .split('.')
-            .map(|seg| seg.parse::<u64>().unwrap_or(0))
-            .collect()
     }
 
     /// 把 Node 所有权结论落到 nodejs 卡片上：托管展示字段 + `install_method` 口径修正。
@@ -752,7 +741,7 @@ mod tests {
     /// 与真实采集产出的 `Manager` 形状一致，免得测试自己手工维护顺序
     fn mgr(kind: ManagerKind, root: &str, versions: &[&str]) -> Manager {
         let mut vs: Vec<String> = versions.iter().map(|v| v.to_string()).collect();
-        vs.sort_by(|a, b| Detector::version_key(b).cmp(&Detector::version_key(a)));
+        vs.sort_by(|a, b| node_source::version_key(b).cmp(&node_source::version_key(a)));
         Manager {
             kind,
             root: PathBuf::from(root),

@@ -391,7 +391,7 @@ fn clean_version_name(raw: &str) -> Option<String> {
 
 /// 版本比较键：按 `.` 切段转 u64 后整体逐段比较。字典序会把 `v9` 排到 `v26` 之前，
 /// 必须按数值逐段比（`[26]` > `[9]`）；段数不同时短的视为更小（`24.22.0` > `24`）。
-fn version_key(v: &str) -> Vec<u64> {
+pub fn version_key(v: &str) -> Vec<u64> {
     v.trim()
         .trim_start_matches(['v', 'V'])
         .split('.')

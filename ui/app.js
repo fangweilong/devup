@@ -1169,10 +1169,13 @@ function renderAll() {
     card.dataset.targetId = item.id;
 
     const isInstalled = item.installed;
-    // D4「显示但不代管」：后端认出托管方时，这张卡片既不算「可升级」也不算「已完成」——
-    // DevUp 不认为那份 runtime 归自己管，所以拿 hasNewerVersion 给它判色就是假承诺。
+    // D4「显示但不代管」：后端认出托管方时，badge 说「托管中」—— 既不是「需更新」也不是「已是最新」，
+    // 因为 DevUp 不认为那份 runtime 归自己管。这里**只**改判色，不改 hasUpdate：按钮行保持原判定，
+    // 用户点「升级最新」会走护栏拿到「由 nvm 托管，请在终端执行 nvm install …」的指引横幅，
+    // 一次点击换来一条正确指引，好过把主行动藏起来（挡掉 hasUpdate 会把卡片推去「卸载」，
+    // 而那条在托管机器上同样被 G5 拒绝，是两个都不会执行的动作里挑一个）。
     const isManaged = !!item.managed_by;
-    const hasUpdate = !isManaged && isInstalled && hasNewerVersion(item.version, item.latest_version);
+    const hasUpdate = isInstalled && hasNewerVersion(item.version, item.latest_version);
 
     let badgeClass = "badge-missing";
     let badgeText = "未安装";
