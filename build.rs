@@ -76,7 +76,7 @@ END
 "#,
             comma = comma_ver,
             version = version,
-            ico_path = ico.display(),
+            ico_path = ico.to_string_lossy().replace('\\', "/"),
         );
 
         if let Err(e) = fs::write(&rc, rc_body) {
