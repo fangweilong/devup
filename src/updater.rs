@@ -133,7 +133,13 @@ impl SelfUpdater {
         // 兼容仍在用裸二进制的历史版本（那条路径下载下来的是裸二进制）。
         #[cfg(target_os = "macos")]
         if is_bundle_archive(download_url) {
-            return Self::execute_bundle_update(&client, download_url, event_sender).await;
+            return Self::execute_bundle_update(
+                &client,
+                download_url,
+                &mirror_config,
+                event_sender,
+            )
+            .await;
         }
 
         let current_exe = std::env::current_exe().context("无法获取当前程序绝对路径")?;
@@ -267,6 +273,7 @@ impl SelfUpdater {
     async fn execute_bundle_update(
         client: &reqwest::Client,
         download_url: &str,
+        mirror_config: &crate::config::MirrorConfig,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -303,14 +310,20 @@ impl SelfUpdater {
         };
         let archive = work_dir.join(format!("DevUp.app.{ext}"));
 
-        log("正在并发测速，优选最快下载源...".to_string());
-        let fastest_url = find_fastest_github_url(client, download_url).await;
-        log(format!("已选定下载源: {}", fastest_url));
+        log("正在根据网络与镜像配置解析最优下载源...".to_string());
+        let target_url = crate::network::mirrors::resolve_github_download_url(
+            client,
+            download_url,
+            &mirror_config.github_mode,
+            &mirror_config.github_mirror,
+        )
+        .await;
+        log(format!("已选定下载源: {}", target_url));
 
         let tx_progress = event_sender.clone();
         download_file(
             client,
-            &fastest_url,
+            &target_url,
             &archive,
             "self_update",
             move |progress| {
