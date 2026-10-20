@@ -730,7 +730,7 @@ impl InstallerEngine {
                     commands,
                     Some(crate::detector::GUARD_ESCAPE_NOTE.to_string()),
                 );
-                Ok(false)
+                return Ok(false);
             }
 
             "git" => {

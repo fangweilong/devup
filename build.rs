@@ -48,8 +48,13 @@ mod windows {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // 显式指定 UTF-8 编码页（65001）与 UTF-8 BOM，防止 CI (如 GitHub Actions 的 windows-latest)
+        // 在英文区域（默认 ANSI 代码页为 CP1252）下调用 rc.exe 编译时把中文字符当成 Latin-1 解析，
+        // 导致最终 PE .rsrc 的 StringFileInfo (如 FileDescription) 出现「çŽ°ä»£åŒ–...」乱码。
         let rc_body = format!(
-            r#"1 VERSIONINFO
+            r#"#pragma code_page(65001)
+
+1 VERSIONINFO
 FILEVERSION {comma}
 PRODUCTVERSION {comma}
 FILEOS 0x40004L
@@ -79,7 +84,8 @@ END
             ico_path = ico.to_string_lossy().replace('\\', "/"),
         );
 
-        if let Err(e) = fs::write(&rc, rc_body) {
+        let rc_content = format!("\u{FEFF}{rc_body}");
+        if let Err(e) = fs::write(&rc, rc_content) {
             println!("cargo:warning=写入资源脚本失败: {e}");
             return;
         }

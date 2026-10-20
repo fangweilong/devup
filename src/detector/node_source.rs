@@ -31,6 +31,7 @@ const VERSION_TIMEOUT: Duration = Duration::from_millis(3000);
 /// `npm config get prefix` 上限：npm 可能在等网络或钥匙串，卡住的探测不如没有探测
 const NPM_TIMEOUT: Duration = Duration::from_millis(2000);
 /// `pkgutil --pkgs` 上限：系统命令，慢也慢不到哪去，但不能阻塞 UI 刷新
+#[cfg(target_os = "macos")]
 const RECEIPT_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// Windows 官方 MSI 的默认落点，也是 nvm-windows 默认接管（做成 junction）的目录
@@ -2404,7 +2405,11 @@ mod tests {
                 },
                 want_allow: false,
                 want_root: None,
-                want_cmd: Some("ls -l /usr/local/bin/node"),
+                want_cmd: if cfg!(windows) {
+                    Some("dir /AL")
+                } else {
+                    Some("ls -l /usr/local/bin/node")
+                },
             },
             // ---- G5 mac 卸载 ----
             Case {
@@ -2418,7 +2423,11 @@ mod tests {
                 },
                 want_allow: false,
                 want_root: None,
-                want_cmd: Some("ls -l"),
+                want_cmd: if cfg!(windows) {
+                    Some("dir /AL")
+                } else {
+                    Some("ls -l")
+                },
             },
             Case {
                 name: "G5 放行：receipt 在册",
