@@ -175,7 +175,8 @@ pub enum GuardDecision {
 match NodeSource::check_install(&node_env, Channel::WindowsMsi) {
     GuardDecision::Refuse { reason, commands, note } => {
         let _ = event_sender.send(AppEvent::Guidance { target_id, reason, commands, note });
-        return Ok(());          // 不是 Err：这是按设计的正确行为
+        crate::state::send_guidance(event_sender, target_id, reason, commands, note);
+        return Ok(false);       // false = 本轮未执行；外层据此跳过 InstallSuccess（见 §9 台账 R1）
     }
     GuardDecision::Allow => {}
 }
@@ -238,6 +239,8 @@ impl AppConfig {
 
 `ui/app.js:984` 附近的 badge 判定与 `style.css` 需配合加一个状态样式。
 
+**任务 D 已交付给 E 的现成接口（别重复实现）**：`ManagerKind::label() -> &'static str`（nvm / nvm-windows / fnm / Volta / mise / asdf / proto / n / Scoop / nvs，文案取名字统一走它，别再各处 match）；`NodeEnv::owner_manager()` 给托管方本体（要 `root` 给用户当路径证据就靠它）；`NodeEnv::managed_versions` 只在 owner 命中时非空。**口径**：渲染「由 X 托管」一律按 owner 取那一个，遍历 `managers` 只用于「本机还有哪些管理器」，两者混用就会把 volta 的版本写进 nvm 的托管说明里。
+
 ---
 
 ## 3. 护栏判定表（M0 最终规则）
@@ -255,7 +258,7 @@ impl AppConfig {
 
 `Unknown` 归属（找到了 node 但认不出来源）：M0 **不拦安装**（避免误伤），但日志与卡片提示「Node 来源未识别：<路径>」，并在 M1 的回验里如实展示。保守只体现在卸载侧（G5/G6 拒绝）。
 
-**拒绝时的文案模板**（`assert_*` 的 `bail!` 内容，走现有 `AppEvent::InstallError` → 前端日志区）：
+**拒绝时的文案模板**（最终落地为 `check_install` / `check_uninstall` 返回的 `GuardDecision::Refuse`，经 `send_guidance` 走 `AppEvent::Guidance`，**不是** `InstallError`）：
 
 ```
 当前 Node.js 由 nvm 托管（~/.nvm，当前 v26.12.0）。
@@ -341,7 +344,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **A** 逃生口 | `node-cfg` | `src/config.rs` | — | `NodeConfig.mode` 缺字段回退 `"auto"`；`guards_enabled()` 单测（含 `"system"`、空串、未知值） |
 | **B** 所有权探测 | `node-env` | `src/detector/node_source.rs`(新)、`src/detector/mod.rs` | — | 表驱动 owner 判定全绿；`scan_shell_rc` fixture 含 `echo PWNED` 且断言无副作用；`--ignored` 探针输出本机 `NodeEnv` |
 | **C** 指引事件通路 | `node-guide` | `src/state.rs`、`src/main.rs`、`ui/app.js`、`ui/style.css` | — | `AppEvent::Guidance` 序列化形状有单测锁定；前端渲染为**中性/黄色横幅**（非 `InstallError` 红字）且命令可一键复制；`cargo test` 全绿。**不做临时触发入口**：本机就装着 nvm，任务 D 落地后点「更新」即是最真实的视觉验证 |
-| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `crate::state::send_guidance(...)` 且返回 `Ok(())`；**移除下列四处 `allow`**（`config.rs` 的 `node_guards_enabled`、`state.rs` 的 `Guidance` 变体与 `send_guidance`、`node_source.rs` 的模块级 `#![allow(dead_code)]`、`detector/mod.rs` 的 `#[allow(unused_imports)]`）——任务 G 的 `grep -rn "allow(dead_code)\|allow(unused_imports)" src/` 必须只剩与本流水线无关的既有项；`detect()` 内含最长约 2s 的子进程等待（`npm config get prefix` / `pkgutil` / `node --version`），接入时必须确认它不跑在 UI 事件循环线程上，必要时 `spawn_blocking` |
+| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs`、`src/state.rs`、`src/detector/mod.rs`（后两个只为清 allow，实际文件清单比本表原稿多这两项） | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `crate::state::send_guidance(...)` 且返回 `Ok(())`；**移除下列四处 `allow`**（`config.rs` 的 `node_guards_enabled`、`state.rs` 的 `Guidance` 变体与 `send_guidance`、`node_source.rs` 的模块级 `#![allow(dead_code)]`、`detector/mod.rs` 的 `#[allow(unused_imports)]`）——任务 G 的 `grep -rn "allow(dead_code)\|allow(unused_imports)" src/` 必须只剩与本流水线无关的既有项；`detect()` 内含最长约 2s 的子进程等待（`npm config get prefix` / `pkgutil` / `node --version`），接入时必须确认它不跑在 UI 事件循环线程上，必要时 `spawn_blocking` |
 | **E** 显示但不代管 | `node-card` | `src/detector/env_check.rs`、`ui/app.js`、`ui/style.css` | B C | `managed_by` 落到 `SoftwareStatus`；nvm-only 机器显示「由 nvm 托管 · vX」而非「未安装」；badge 新状态 `托管中` |
 | **F** 卸载安全化 | `node-uninstall` | `src/installer/macos.rs`、`src/installer/mod.rs` | B D | 无 PKG receipt 时拒绝删除并说明；Win 卸载按 `InstallLocation` 过滤 manager 目录 |
 | **G** 回归与收口 | `node-verify` | 全量只读 + `README.md` | A–F | `cargo test` + A1b/A2/A4/A7 探针实跑记录；README 增「行为变更」小节；护栏拒绝文案复核 |
@@ -356,7 +359,22 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | A `node-cfg` | ✅ 已完成 | `4930f8f` | 17 passed / 0 warning；**遗留：`node_guards_enabled()` 上的 `#[allow(dead_code)]` 必须在任务 D 移除**（已写进 D 的完成判据） |
 | B `node-env` | ✅ 已完成 | `24c6a9c` | 27 passed / 3 ignored、build 0 warning、新文件 rustfmt-clean。**过程记录**：第一版交回时工作树编译不过（结构改动做了一半），第二版补齐但 `managers_with_versions()` 实为 `managers` 的别名，最后两项由主 agent 代为收尾；主 agent 自己误用 `rustfmt src/detector/mod.rs` 递归重排了 `env_check.rs`（已还原，教训进 §7 约束 7） |
 | C `node-guide` | ✅ 已完成 | `ba89d60` | 30 passed / 3 ignored、build 0 warning、`node --check` 通过、381 insertions + **0 deletions**（未跑 fmt 的硬证据）、只碰清单内 3 文件。**新增两处 `allow` 已并入 D 的清理判据**；`main.rs` 零改动即接通（派发是变体无关的 serde） |
-| D `node-guard` | ⏳ 待开 | — | |
+| D `node-guard` | ✅ 已完成 | `b442fdf` | 34 passed / 4 ignored、build 0 warning、四处 allow 全清（grep 只剩 `proxy.rs` / `updater.rs` 的既有项）、接入点均在下载之前、`detect()` 走 `spawn_blocking`；`node_source.rs` 被它带回 9 处 fmt hunk，已由主 agent 单独 rustfmt 复原为 0。**7 处偏离的裁定见 §9 台账** |
 | E `node-card` | ⏳ 待开 | — | |
 | F `node-uninstall` | ⏳ 待开 | — | |
 | G `node-verify` | ⏳ 待开 | — | |
+
+## 9. 实现期裁定台账
+
+子 agent 交付时会带「偏离」清单，这里逐条留档，避免后来人靠聊天记录考古。
+
+| # | 偏离 | 裁定 | 理由 |
+|---|---|---|---|
+| **R1**（D-A） | 四个平台函数从 `Result<()>` 改为 `Result<bool>`，`false` = 护栏已出指引、本轮未执行 | **采纳，属必要修正** | 外层 `install_target` 原本在平台函数正常返回后**无条件**发 `InstallSuccess`，而前端收到它第一件事就是 `delete state.guidance[target_id]`（`ui/app.js:92-94`）——照 `Ok(())` 写会当场抹掉刚挂上的横幅，还把「未代为执行」渲染成「安装完成」。任务 C 的注释早就写明「护栏拒绝路径不会再来 InstallSuccess」，是 D 的规格没接住这条 |
+| **R2**（D-B） | Refuse 的 `commands` 里用 `{ver}` 令牌，由调用侧 `apply_target_version()` 注入 `Detector::get_latest_version("nodejs")` | **采纳** | 「判定是纯函数」与「版本不硬编码、取自全局缓存」不能让同一个函数既满足又保持表驱动单测不受线上状态漂移 |
+| **R3**（D-C） | 护栏开关在 preflight 里 `AppConfig::load()` 从磁盘读，而不是用 `main.rs` 内存里那份 `Arc<Mutex<AppConfig>>` | **采纳** | `node.mode` 在 M0 没有 UI（D1），唯一改法是手改 config.json，磁盘本就是这件事的真相源；换来的是跨层签名不动、不碰 `main.rs`。代价是一次几 KB 文件读，已与探测合进同一个 blocking 任务 |
+| **R4**（D-D） | 改写任务 B 的 `platform_known_dirs`：从整段 `#[cfg(windows)]` 改为运行时 `if !cfg!(windows) { return Vec::new(); }` | **采纳，覆盖任务 B 的实现决定** | 清掉模块级 allow 后，`ManagerKind::Nvs` 在 mac 构建里报「never constructed」；那两个条目只是路径拼接、不碰 Windows API，B 当初「必须靠 cfg 排除」的理由不成立。探测语义零变化（非 Windows 仍是空表）。**B 与 D 在同一文件上重叠，这类覆盖必须显式记档** |
+| **R5**（D-E） | `same_path` 加 `#[cfg(any(windows, test))]` | **采纳** | 唯一非测试调用方是 `#[cfg(windows)]` 函数，不加会在 mac 构建里成死代码 |
+| **R6**（D-F） | mac 卸载按实际路由传渠道：`brew_installed_formula("node")` 为真 → `MacBrewInstall`（`check_uninstall` 放行）；只有要走 `remove_pkg_node_files` 才按 `MacPkg` 适用 G5 | **采纳** | G5 拦的是「闭眼 `rm -rf /usr/local/bin/node`」，`brew uninstall node` 删的是 brew 自己记账的目录，不在射程内。副作用已知：装了 brew node 却被 nvm 遮蔽的机器仍会放行卸载——这是「谁装的谁移除」的一致口径，不改成严格字面 |
+| **R7**（D-G） | `owner = Unknown` 本身不触发拒绝（D2），但 G1 的三条**直接证据**（reparse / `NVM_SYMLINK` / 目录落在 manager.root 内）成立时照拦 | **采纳，并据此精确化 D2** | `classify` 的表里就有一条「目录是 reparse 却查不到管理器证据 → Unknown」；若连这种也放行，G1 的第一条触发条件形同虚设。D2 的本意一直是「归属不明**且无直接证据**时不误拦」，设计文档 §13 D2 已补这句限定 |
+| **R8**（主 agent 自身） | D 把 `node_source.rs` 的 fmt hunk 从 0 带回 9 处 | **已复原** | 该文件是流水线新建、按 §7 约束必须保持 rustfmt-clean；单独 `rustfmt --edition 2024` 该文件安全（已确认它没有文件级 `mod` 声明，不会递归外溢） |
