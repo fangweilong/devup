@@ -29,10 +29,16 @@ pub enum IpcCommand {
     DragWindow,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// 仅由后端序列化推送到 WebView（前端 window.onEvent 消费），无反向解析需求
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum AppEvent {
     StatusList(Vec<SoftwareStatus>),
+    /// 内置 GitHub / npm 加速镜像清单（前端选项面板由后端数据源动态渲染）
+    MirrorOptions {
+        github: Vec<crate::network::mirrors::BuiltinMirror>,
+        npm: Vec<crate::network::mirrors::BuiltinMirror>,
+    },
     /// 当前网络、代理配置与镜像信息
     ProxyStatus {
         proxy: Option<String>,

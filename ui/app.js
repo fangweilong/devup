@@ -7,6 +7,8 @@ let state = {
   githubMode: "auto",
   githubMirror: "https://ghproxy.net/",
   npmRegistry: "https://registry.npmmirror.com",
+  githubMirrors: [],
+  npmMirrors: [],
   isRefreshing: false,
   activeTaskId: null,
   activeFilter: "all",
@@ -68,6 +70,13 @@ window.onEvent = function (event) {
       state.githubMirror = event.data.github_mirror || "https://ghproxy.net/";
       state.npmRegistry = event.data.npm_registry || "https://registry.npmmirror.com";
       updateProxyBadge();
+      break;
+
+    case "MirrorOptions":
+      // 内置镜像清单由后端(唯一数据源)下发，避免与 Rust 解析逻辑漂移
+      state.githubMirrors = event.data.github || [];
+      state.npmMirrors = event.data.npm || [];
+      renderMirrorOptions();
       break;
 
     case "Log":
@@ -146,9 +155,92 @@ function updateProxyBadge() {
 
   text.textContent = `${proxyLabel} · ${ghLabel}`;
   badge.title = `【网络与镜像配置】\n代理: ${state.proxy || "无"} (${state.proxyMode})\nGitHub镜像: ${state.githubMode === "auto" ? "并发自动测速" : state.githubMirror}\nnpm镜像: ${state.npmRegistry}\n点击修改网络与加速镜像配置`;
+
+  // 已保存状态变化时同步弹窗 Tab 摘要
+  updateTabValues();
 }
 
 // ---- 网络代理与加速镜像配置弹窗 ----
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+/// 内置镜像单选按钮由后端清单渲染（Rust 为唯一数据源）
+function renderMirrorOptions() {
+  const ghHost = document.getElementById("github-mirror-options");
+  const npmHost = document.getElementById("npm-mirror-options");
+  if (ghHost) {
+    ghHost.innerHTML = state.githubMirrors.map((m) => `
+      <label class="proxy-mode-option">
+        <input type="radio" name="github-mode" value="${escapeHtml(m.url)}" />
+        <span class="proxy-mode-text">
+          <strong>🌐 ${escapeHtml(m.name)} (内置节点)</strong>
+          <em>${escapeHtml(m.url)} —— ${escapeHtml(m.desc)}</em>
+        </span>
+      </label>`).join("");
+  }
+  if (npmHost) {
+    npmHost.innerHTML = state.npmMirrors.map((m, i) => `
+      <label class="proxy-mode-option">
+        <input type="radio" name="npm-registry" value="${escapeHtml(m.url)}" />
+        <span class="proxy-mode-text">
+          <strong>${i === 0 ? "⚡" : "🌐"} ${escapeHtml(m.name)}${i === 0 ? " (推荐)" : ""}</strong>
+          <em>${escapeHtml(m.url)} —— ${escapeHtml(m.desc)}</em>
+        </span>
+      </label>`).join("");
+  }
+}
+
+// ---- 弹窗分类 Tab ----
+function activateModalTab(name) {
+  document.querySelectorAll("#proxy-modal .modal-tab").forEach((t) => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("#proxy-modal .modal-tab-panel").forEach((p) => {
+    p.classList.toggle("active", p.dataset.panel === name);
+  });
+}
+
+/// 各 Tab 顶部的当前值摘要，让用户不切换也能看到三类配置现状
+function updateTabValues() {
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+
+  const proxyText =
+    state.proxyMode === "custom" ? (state.proxy || "未生效")
+      : state.proxyMode === "direct" ? "直连"
+        : state.proxy ? "已嗅探" : "跟随系统";
+  set("tab-value-proxy", proxyText);
+
+  let ghText;
+  if (state.githubMode === "direct") {
+    ghText = "直连官方";
+  } else if (state.githubMode === "auto") {
+    ghText = "自动测速";
+  } else {
+    try {
+      ghText = new URL(state.githubMirror).hostname;
+    } catch {
+      ghText = "自定义";
+    }
+  }
+  set("tab-value-github", ghText);
+
+  let npmText;
+  try {
+    npmText = new URL(state.npmRegistry).hostname;
+  } catch {
+    npmText = "自定义";
+  }
+  set("tab-value-npm", npmText);
+}
+
 function getSelectedProxyMode() {
   const checked = document.querySelector('input[name="proxy-mode"]:checked');
   return checked ? checked.value : "system";
@@ -180,9 +272,51 @@ function syncProxyModalUi() {
       opt.classList.toggle("selected", input.checked);
     }
   });
+
+  updateTabValuesFromSelection();
+}
+
+/// 编辑态摘要：跟随弹窗内当前勾选（而非已保存状态）实时反映
+function updateTabValuesFromSelection() {
+  const set = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+
+  const pm = getSelectedProxyMode();
+  set("tab-value-proxy", pm === "custom" ? "自定义" : pm === "direct" ? "直连" : "跟随系统");
+
+  const gh = getSelectedGithubMode();
+  if (gh === "auto") {
+    set("tab-value-github", "自动测速");
+  } else if (gh === "direct") {
+    set("tab-value-github", "直连官方");
+  } else if (gh === "custom") {
+    set("tab-value-github", "自定义");
+  } else {
+    try {
+      set("tab-value-github", new URL(gh).hostname);
+    } catch {
+      set("tab-value-github", "已选");
+    }
+  }
+
+  const npm = getSelectedNpmRegistry();
+  if (npm === "custom") {
+    set("tab-value-npm", "自定义");
+  } else {
+    try {
+      set("tab-value-npm", new URL(npm).hostname);
+    } catch {
+      set("tab-value-npm", "已选");
+    }
+  }
 }
 
 function openProxyModal() {
+  // 兜底重绘：若清单事件早于 DOMContentLoaded 到达，选项容器可能仍为空
+  renderMirrorOptions();
+
   // 1. 代理模式
   document.querySelectorAll('input[name="proxy-mode"]').forEach((r) => {
     r.checked = r.value === state.proxyMode;
@@ -226,6 +360,7 @@ function openProxyModal() {
   }
 
   syncProxyModalUi();
+  activateModalTab("proxy");
   document.getElementById("proxy-modal").classList.add("show");
   if (state.proxyMode === "custom") {
     document.getElementById("proxy-url-input").focus();
@@ -977,8 +1112,19 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // 代理与镜像配置弹窗
   document.getElementById("proxy-badge").addEventListener("click", openProxyModal);
-  document.querySelectorAll('input[name="proxy-mode"], input[name="github-mode"], input[name="npm-registry"]').forEach((r) => {
-    r.addEventListener("change", syncProxyModalUi);
+
+  // 弹窗内分类 Tab 切换
+  document.querySelectorAll("#proxy-modal .modal-tab").forEach((tab) => {
+    tab.addEventListener("click", () => activateModalTab(tab.dataset.tab));
+  });
+
+  // 镜像单选按钮由后端清单动态渲染，故用事件委托绑定，避免渲染时机竞态
+  const modalEl = document.getElementById("proxy-modal");
+  modalEl.addEventListener("change", (e) => {
+    const name = e.target && e.target.name;
+    if (name === "proxy-mode" || name === "github-mode" || name === "npm-registry") {
+      syncProxyModalUi();
+    }
   });
 
   const proxyUrlInput = document.getElementById("proxy-url-input");

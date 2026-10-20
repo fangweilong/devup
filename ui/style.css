@@ -31,16 +31,16 @@ body {
   overflow: hidden;
 }
 
-/* 顶部导航栏 - 毛玻璃与微渐变 */
+/* 顶部导航栏 - 与内容区同底色融为一体，仅用极淡描边分层 */
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 12px 28px;
-  background: rgba(18, 24, 38, 0.85);
+  /* 与 body 同底色的微透明层：滚动时内容从下方透出，顶部不出现"另一块面板"的割裂感 */
+  background: rgba(9, 13, 22, 0.82);
   backdrop-filter: blur(16px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   z-index: 10;
   cursor: default;
 }
@@ -237,60 +237,96 @@ body.is-mac header {
   padding: 22px 24px;
 }
 
-.modal-scroll-body {
-  overflow-y: auto;
-  max-height: 56vh;
-  padding-right: 6px;
+/* 分类 Tab:每类独立面板,避免长列表滚动 */
+.modal-tabs {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin: 8px 0;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(10, 14, 23, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 9px;
+  margin: 4px 0 2px;
 }
 
-.modal-scroll-body::-webkit-scrollbar {
+.modal-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: background 0.18s, color 0.18s;
+  font-family: inherit;
+}
+
+.modal-tab:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.modal-tab.active {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.modal-tab-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.modal-tab-value {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-tab:not(.active) .modal-tab-value {
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
+.modal-tab-panels {
+  min-height: 236px;
+  margin: 4px 0 2px;
+}
+
+/* 单面板内仍保留可滚动兜底(镜像数量增多时不会撑破弹窗) */
+.modal-tab-panel {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.modal-tab-panel.active {
+  display: flex;
+}
+
+.modal-tab-panel::-webkit-scrollbar {
   width: 6px;
 }
-.modal-scroll-body::-webkit-scrollbar-track {
+.modal-tab-panel::-webkit-scrollbar-track {
   background: rgba(0, 0, 0, 0.2);
   border-radius: 3px;
 }
-.modal-scroll-body::-webkit-scrollbar-thumb {
+.modal-tab-panel::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
 }
-.modal-scroll-body::-webkit-scrollbar-thumb:hover {
+.modal-tab-panel::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
-}
-
-.config-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 10px;
-  padding: 12px 14px;
-}
-
-.config-section-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.section-tag {
-  display: inline-block;
-  padding: 2px 7px;
-  font-size: 10.5px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  border-radius: 4px;
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
 }
 
 .config-section-desc {

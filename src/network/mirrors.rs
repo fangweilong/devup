@@ -1,7 +1,10 @@
 use std::time::Duration;
 use reqwest::Client;
+use serde::Serialize;
 
-#[derive(Clone, Debug)]
+/// 内置加速镜像条目：同时作为后端解析依据与前端选项面板的数据源，
+/// 避免镜像清单在 Rust 与 HTML 中各写一份而漂移。
+#[derive(Clone, Debug, Serialize)]
 pub struct BuiltinMirror {
     pub id: &'static str,
     pub name: &'static str,
@@ -63,13 +66,6 @@ pub const BUILTIN_NPM_MIRRORS: &[BuiltinMirror] = &[
         url: "https://registry.npmjs.org",
         desc: "海外官方源（建议配合全局代理或梯子使用）",
     },
-];
-
-pub const GITHUB_PROXY_PREFIXES: &[&str] = &[
-    "https://ghproxy.net/",
-    "https://mirror.ghproxy.com/",
-    "https://ghps.cc/",
-    "https://gh.ddlc.top/",
 ];
 
 pub const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";

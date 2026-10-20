@@ -16,6 +16,10 @@ wry = "0.57.0"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
 
+# Windows PE 资源编译：将图标与版本信息写入 .rsrc 段（tao 的窗口图标不写入磁盘图标）
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.12"
+
 # macOS 定向整窗拖拽需在拖拽中段合成 LeftMouseDown 事件（tao 的 drag_window 不做此补偿）
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
