@@ -223,6 +223,8 @@ impl AppConfig {
 - `latest_version` 仍照常展示，供用户知道终端里该装到哪个版本；
 - 该 runtime **不被当作可操作 target**：Agent 安装仍按现有 PATH 解析结果走，M0 不改这一口径（M3 才统一）。
 
+**本机实测数据点（影响 E 的渲染，别按「副管理器为空」想当然）**：`managers` 里 Volta 并不空——`~/.volta/tools/image/node/` 实装 `16.14.2` 与 `20.15.0`，与 nvm 的三个版本并存。所以 owner=`Manager(Nvm)` 时，卡片只能取 `managed_versions`（nvm 那三个），**不得**把 volta 的两个版本混进「由 nvm 托管」；owner 为 `None`/`Unknown` 时按 `managers` 逐个渲染成「nvm（26.12.0 / 24.22.0 / 16.20.2）、volta（20.15.0 / 16.14.2）」这种各归各的形态，而不是合并成一条版本列表。取托管方本体用 `owner_manager()`（要 `root` 给用户提供路径证据就靠它）。
+
 `ui/app.js:984` 附近的 badge 判定与 `style.css` 需配合加一个状态样式。
 
 ---
@@ -321,7 +323,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 5. Windows 分支代码照常写，但标注为「本机未验证」，不得声称已验证。
 6. 提交由主 agent 负责，每个任务两个提交：代码提交（`feat|fix(scope): …`）+ 文档状态提交（`docs(plan): …`，把 §8 状态表填上真实提交号）。
 7. 格式化只允许 `rustfmt --edition 2024 <显式文件清单>`，且**清单里不得出现含 `mod xxx;` 声明的文件**——rustfmt 会跟随模块声明递归格式化子模块。任务 B 收尾时主 agent 把 `src/detector/mod.rs` 传了进去，导致 `env_check.rs` 被整体重排（+96/−32 纯格式化改动，无逻辑变化，已 `git checkout` 还原）。既有文件一律不动，新文件必须 rustfmt-clean。
-8. 子 agent 的 `result` / idle 摘要可能是**它上一轮的状态**（实测两次：报告「27 passed」时工作树其实编译不过）。任何验收数字都必须由主 agent 自己重跑 `cargo test` / `cargo build` / `git status` 得出，不得引用其自述。
+8. 子 agent 的 `result` / idle 摘要**不得作为验收依据**。任务 B 期间实测到三类不一致：报告「27 passed」时工作树其实编译不过（真实的半成品中间态）；`TaskStop` 返回成功后其进程仍存活并继续投递消息；自述「已 `touch` 两个文件强制重编译」但文件 mtime 仍是主 agent 的操作时刻、15:05 后无任何写入痕迹。所有数字一律由主 agent 自己重跑 `cargo test` / `cargo build` / `git status` / `stat` 得出。
 
 | 任务 | agent 名 | 范围（文件） | 依赖 | 完成判据 |
 |---|---|---|---|---|
