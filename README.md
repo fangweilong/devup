@@ -44,6 +44,7 @@
 检测到本机装有 Node 版本管理器（nvm / fnm / Volta / mise / asdf / proto / n / Scoop / nvs）或 `/usr/local` 下的 node 不是官方 PKG 装入时，DevUp **不再代为安装或卸载 Node.js**，改为弹出一条**终端指引**（非错误横幅）：说明当前托管方与其目录（如 `~/.nvm`，含当前版本），并给出可直接复制的对应命令（如 `nvm install 24.21.0`）。
 
 - 拒绝发生在**下载之前**，不会产生半截下载或系统改动；Node 卡片会显示「由 X 托管」与托管目录里的实际版本，而不是「未安装」。
+- 托管机器上点安装 / 卸载动作，弹的不是「确认执行」窗而是**黄色指引窗**：列出该管理器自己的命令（安装建议给 DevUp 本来要装的目标版本；卸载建议给托管方**已装**的版本，如 `nvm uninstall 26.12.0`），每条可单独复制。若某动作后端其实会放行（如有官方 PKG receipt 的卸载），窗口会照常是确认窗——弹窗形态完全跟随实时判定。
 - 这是行为变更，不是纯 bug 修复：拦的是「向他人托管的目录写 runtime / 盲删非 PKG 来源的 node」这类破坏性动作；未检测到管理器时行为与 0.3.5 一致。
 - 逃生口：确需 DevUp 接管系统安装的，把 `node.mode` 设为 `"system"`（0.3.6 不提供 UI，需手改配置文件——macOS `~/Library/Application Support/devup/config.json`，Windows `%APPDATA%\devup\config.json`）；该模式会跳过全部 Node 所有权检查，恢复 0.3.5 行为，每次安装日志首行会打印绕过警告。
 

@@ -3,7 +3,7 @@
 > 分支：`feat/node-manager-coexistence`
 > 上游设计：`docs/design-node-manager-coexistence.md`（§1 现状缺陷、§4 护栏 G1–G6、§10 M0）
 > 目标版本：0.3.6（patch 发布）
-> 状态：评审已定案（D1–D5 见设计文档 §13）；步 1 与流水线 A–G **已全部完成**（G 收口于 2026-10-20，实录见 §10）；剩余动作只有发版（0.3.6 版本号提升 + tag，见 §5）
+> 状态：评审已定案（D1–D5 见设计文档 §13）；步 1 与流水线 A–G **已全部完成**（G 收口于 2026-10-20，实录见 §10）；G 收口期间经用户追加任务 **H**（托管弹窗直通指引 + 卸载建议修正，见 R21/R22）也已完成；剩余动作只有发版（0.3.6 版本号提升 + tag，见 §5）
 
 ## 1. M0 做什么
 
@@ -363,6 +363,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | E `node-card` | ✅ 已完成 | `33ac30e` + `e61afc8` | 39 passed / 5 ignored、build 0 warning、`node --check` OK、`detect_all()` 每轮只取证一次；A7 现场实跑复现（GUI 模拟：`managed_by=nvm`、`installed=false`，不再报「未安装」）。两处返工见 R12/R13；R9 决定不动 `main.rs`；**R14 的前端组合无自动化覆盖，是 G 的走查项** |
 | F `node-uninstall` | ✅ 已完成 | `b4ff86e` | 43 passed / 6 ignored、build 0 warning、只碰 `macos.rs` + `installer/mod.rs`（546 增 / 13 删，无格式化外溢）、`node_source.rs` 一字未动仍 0 fmt hunk。提权守卫已代码级确认：`removable.is_empty()` 早退，`run_admin_shell` 不可达。偏离裁定见 §9 R15–R18 |
 | G `node-verify` | ✅ 已完成 | `5876c57` | 全量只读复核 43 passed / 0 warning / grep·rustfmt 达标；6 探针实跑 + GUI 实点走查（G3/G5 黄色横幅、复制、A7）全部命中；README 增「行为变更（0.3.6）」；走查发现既有缺陷 **R19**（确认弹窗在 mac 显示 Windows 命令）已顺手修复。实录见 §10 |
+| H 指引直通弹窗 | ✅ 已完成 | `f2f915b` | G 收口期间用户追加：托管机器点安装/卸载**先弹管理器指引**而非假确认窗（`guard_hint` / `uninstall_hint` 由 `check_install`/`check_uninstall` 同源预览）；过程中用户又点破卸载建议误用安装族命令（R22）。47 passed / 0 warning、新文件 fmt-clean、两站弹窗经用户实点确认 |
 
 ## 9. 实现期裁定台账
 
@@ -390,6 +391,8 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **R18**（F-⑥） | 改了 D 的 G6 PowerShell 模板：`-eq` / `StartsWith` → `[StringComparison]::Ordinal` | **采纳，属真实缺陷修复** | PS 默认是 culture-sensitive 比较，撇号/连字符在某些 culture 下按可忽略处理，会把只差标点的无关包判成托管方，全部判中时还会谎报「注册项全部指向管理器目录」。这是「第二套归一化规则」的实例，与 §9 R13 同类。**Windows 未验证**（无环境无 pwsh，纯静态推理），列进 A5/A6 补测 |
 | **R19**（G 走查发现） | `getExecutionPlan` 的确认弹窗命令预览在 mac 上显示 **Windows 模板**（node 重装预览 `msiexec`、node 卸载预览 `powershell Get-Package`、git 预览 `Git-Installer`），与后端实际执行（`brew install node` / `installer -pkg` / CLT）完全不符 | **G 内顺手修复**（用户裁定），`5876c57` | `git diff main...HEAD` 证明是 main 既有缺陷、非 M0 回归；但 G 的「拒绝文案复核」正该覆盖「用户点确认前看到的承诺」这层——预览对破坏性动作做虚假陈述不可留。修法用文件内**已有**的 `isMac` 常量（`ui/app.js:35`）为 nodejs/git 分支 mac 文案，Windows 分支逐字不动；claudecode 卸载注释里 `%USERPROFILE%…claude.exe` 同步按平台给 `~/.local/bin/claude`。超 G「只读+README」原范围，经用户明确同意后并入 |
 | **R20**（G 走查口径） | 走查两处与原清单的字面差异：① node 按钮是「重新安装」非「升级最新」（本机 nvm 生效 26.12.0 > LTS 24.22.0，`hasUpdate=false` 的自然渲染，R12 撤回后按钮行本就不受 `isManaged` 影响）；② A7 用 `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin` 重启同一二进制模拟，未跑打包 `.app` 双击 | **接受为等效验证，如实记录** | ①两个按钮走同一个 `install_target` 护栏通路，G3 横幅照出，R14 要钉的「托管 badge + 主行动按钮并存」成立；②launchd 环境的决定性变量就是那条默认 PATH，模拟与真 Finder 启动在探测层不可区分。真机 `open DevUp.app` 仍留在待验表，发版前用打包产物补一遍即可 |
+| **R21**（G 收口期间用户追加） | 托管机器的安装/卸载点击不再先弹「确认执行」窗：后端把**护栏对当前渠道的预览判定**随卡片下发（`SoftwareStatus.guard_hint` / `uninstall_hint`，由 `node_source::guidance_preview` 调同一个 `check_install`/`check_uninstall` + `apply_target_version` 生成），会拒 → 黄色指引窗（reason/commands/note 零自造，逐条独立复制 + 「复制全部」），会放行（有 receipt 的卸载、brew 自管、mode=system）→ 普通确认窗原样 | **采纳（用户裁定「完整方案」）** | 「确认了个注定不会执行的动作」是体验缺陷，而前端**绝不能自己猜**会不会拒——预览必须就是判定函数的那一次调用；后端 `node_preflight` 仍是最终权威，弹窗分流不豁免任何实时判定。行距/文案两处微调系用户实点反馈（「命令分开单独复制」「弹窗显示不同的管理器命令」——后者确认安装侧本就逐 kind，与卸载侧同表同源） |
+| **R22**（H 期间用户点破） | 卸载被 G5/G6 拒绝时，横幅/指引窗建议的是**安装族**命令（`nvm install 24.22.0` = DevUp 的目标版本，用户本机根本没装 24.x）——「别删」的现场教「装」，语义整个反转 | **修复，属真实缺陷** | `refuse()` 拆为 `refuse_with`，G5/G6 与两处脚本侧指引（Win G6 全命中、mac 卸载全跳过）切到新增的 `uninstall_hint_commands`：逐 kind 的**移除**表 `guard_uninstall_commands`（`{ver}` 填**托管方已装版本**——owner 命中优先 `env.version`，否则该 manager 自己 `versions[0]`，构建时就地填掉，不再借安装侧的 `apply_target_version` 管线）；无版本可填退化为只读 `nvm ls` 类命令，nvs 的移除别名语法没把握只给 `nvs ls`（与 install 侧「只写确有其事」同纪律）。**Windows 移除形态未实机验证**。测试：`uninstall_hint_commands_never_install` 全 kind 表驱动钉「无令牌残留 + 无安装命令 + 无缺参半成品」 |
 
 > F 的一条方法论点值得留在台账里：本机 dump 显示 6 条候选**全部可删**（没有任何 `/usr/local` 路径链进 `~/.nvm`/`~/.volta`），而生产里 `pkg_receipt=false` 会让 G5 先拒绝——所以「本机跑不出跳过项」**不等于**「跳过逻辑验证过了」，跳过分支的证据只在合成 symlink 现场的表驱动单测里。它主动把这两层分开说了。
 
@@ -408,10 +411,12 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | E 卡片显示托管方 | `33ac30e`、`e61afc8` | `8d01736` |
 | F 卸载安全化 | `b4ff86e` | `0405d46`、`baeedc8` |
 | G 回归与收口（含 R19 弹窗修复） | `5876c57` | 与本节同批 |
+| H 指引直通弹窗（含 R22 卸载命令修正） | `f2f915b` | 与本节同批 |
 
-**基线数字**（F 之后）：`cargo test` = **43 passed / 6 ignored**、`cargo build` = **0 warning**、`node --check ui/app.js` 通过；`node_source.rs` 的 `rustfmt --edition 2024 --check` 必须无输出。新设备上先跑这几个确认环境一致（macOS；node 在 `~/.nvm/versions/node/v26.12.0/bin`）。
+**基线数字**（H 之后）：`cargo test` = **47 passed / 6 ignored**、`cargo build` = **0 warning**、`node --check ui/app.js` 通过；`node_source.rs` 的 `rustfmt --edition 2024 --check` 必须无输出。新设备上先跑这几个确认环境一致（macOS；node 在 `~/.nvm/versions/node/v26.12.0/bin`）。
 
-### G 已完成（`5876c57`）——M0 全部任务收口，只剩发版
+### G、H 已完成——M0 全部任务收口，只剩发版
+H（R21/R22）是 G 收口期间用户追加的：托管机器点安装/卸载直接弹管理器指引（预览=判定函数本身，会放行的动作仍是确认窗），卸载建议从安装族命令修正为各管理器的移除命令（版本=托管方已装那份）。两站弹窗经用户实点确认。
 下面这段是 F 的原规格，留作记录；它已全部落地，三处裁定见 §9 R15–R18。**G 需要知道的接口变化**：
 `MacInstaller::remove_pkg_node_files(&NodeEnv, &str, impl FnMut(String)) -> Result<PkgRemoval>`，`PkgRemoval { deleted, skipped, executed }`；`uninstall_target_macos("nodejs")` 对外契约不变（`Result<bool>`，`false` = 已出指引、**没弹框**、什么都没删）。`node_channel` 的 §2.2 口径问题 F 没碰，仍在原处。
 
@@ -447,6 +452,7 @@ F 的禁区：不许真删文件、不许调用提权路径做"验证"、不碰 
 | G3 已知代价 | 装了 brew node 却被 nvm 遮蔽的机器，`brew upgrade` 会被拒绝一次。已写进 `g3_brew_install` 的 doc，不改 |
 | 前端「托管中 + 主行动按钮」组合 | G 已真机走查（badge「托管中」与「重新安装」并存，点击进护栏，见 R20）；「托管中 + 升级最新」的**字面**组合要等生效版本低于 LTS 的机器才能亲眼出现，仍无自动化覆盖（R14 维持） |
 | `system` 逃生口的端到端 | 只有单元测试层，没跑过「改 config.json → 下次安装真的绕过」 |
+| 移除命令形态（R22 新增表） | 本机实点验过 nvm 一种；fnm/mise/asdf/proto/n/scoop 形态照官方文档写，没有对应环境逐条实跑；Windows（nvm-windows/scoop）与 nvs 的只读退化整体未验证，压进 A5/A6 补测 |
 
 ### 协作约束（避免新会话重新踩，全文见 §7）
 1. 子 agent 的自述**不作为验收依据**：M0 期间实测到三类与文件系统不符（半成品报全绿、`TaskStop` 后进程仍活着并继续投递、自述 `touch` 但 mtime 未变）。所有数字由主 agent 重跑 `cargo test` / `cargo build` / `git status` / `stat` 得出。
