@@ -27,6 +27,8 @@ pub enum IpcCommand {
     PerformSelfUpdate { download_url: String },
     /// macOS 头部空白区按下时，请求原生整窗拖拽（替代 movableByWindowBackground 全局劫持）
     DragWindow,
+    /// 退出应用（macOS Cmd+Q 前端桥接，与点击关闭按钮走同一退出链路）
+    Quit,
 }
 
 /// 仅由后端序列化推送到 WebView（前端 window.onEvent 消费），无反向解析需求

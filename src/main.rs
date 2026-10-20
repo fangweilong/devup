@@ -30,6 +30,8 @@ use updater::SelfUpdater;
 #[derive(Debug)]
 enum UserEvent {
     PushToWebview(AppEvent),
+    /// 退出应用（macOS Cmd+Q 等），与 CloseRequested 走同一退出链路
+    Quit,
 }
 
 /// macOS: 在真实的左键按下事件上启动系统级整窗拖拽。
@@ -134,6 +136,8 @@ fn main() -> anyhow::Result<()> {
     let tx_for_ipc = tokio_event_tx.clone();
     let active_proxy_for_ipc = active_proxy.clone();
     let config_for_ipc = app_config.clone();
+    // IPC 线程请求退出时经 EventLoopProxy 投递 Quit（如 macOS Cmd+Q）
+    let loop_proxy_for_ipc = proxy.clone();
 
     // 3. 构建 WebView
     let webview = WebViewBuilder::new()
@@ -332,6 +336,10 @@ fn main() -> anyhow::Result<()> {
                         native_drag_window(ns_window_ptr);
                     }
                 }
+                Ok(IpcCommand::Quit) => {
+                    // macOS Cmd+Q 由前端拦截后桥接进来，与关闭窗口同样退出
+                    let _ = loop_proxy_for_ipc.send_event(UserEvent::Quit);
+                }
                 Ok(IpcCommand::PerformSelfUpdate { download_url }) => {
                     let tx = tx_for_ipc.clone();
                     let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
@@ -407,6 +415,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     // 5. 事件循环驱动
+    // macOS: tao 0.37 没有应用菜单，Cmd+Q 无系统级归宿。主路径是前端拦截
+    // keydown 后经 IPC Quit 投递 UserEvent::Quit；这里额外跟踪修饰键并在
+    // webview 尚未接管焦点时（KeyboardInput 直达 tao）原生兜底一次。
+    #[cfg(target_os = "macos")]
+    use tao::event::ElementState;
+    #[cfg(target_os = "macos")]
+    use tao::keyboard::{KeyCode, ModifiersState};
+    #[cfg(target_os = "macos")]
+    let mut mac_modifiers = ModifiersState::empty();
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -417,11 +435,38 @@ fn main() -> anyhow::Result<()> {
                     let _ = webview.evaluate_script(&script);
                 }
             }
+            Event::UserEvent(UserEvent::Quit) => {
+                *control_flow = ControlFlow::Exit;
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
                 *control_flow = ControlFlow::Exit;
+            }
+            #[cfg(target_os = "macos")]
+            Event::WindowEvent {
+                event: WindowEvent::ModifiersChanged(mods),
+                ..
+            } => {
+                mac_modifiers = mods;
+            }
+            #[cfg(target_os = "macos")]
+            Event::WindowEvent {
+                event: WindowEvent::KeyboardInput {
+                    event: key_event, ..
+                },
+                ..
+            } => {
+                if key_event.state == ElementState::Pressed
+                    && key_event.physical_key == KeyCode::KeyQ
+                    && mac_modifiers.super_key()
+                    && !mac_modifiers.control_key()
+                    && !mac_modifiers.alt_key()
+                    && !mac_modifiers.shift_key()
+                {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
             _ => (),
         }
