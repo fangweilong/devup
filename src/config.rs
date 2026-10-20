@@ -51,11 +51,33 @@ impl Default for MirrorConfig {
     }
 }
 
+/// Node 版本管理器共存配置
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NodeConfig {
+    /// "auto"(默认，启用全部 Node 所有权护栏) | "system"(跳过护栏，恢复旧行为)
+    ///
+    /// 刻意用 String 而不是枚举：`AppConfig::load()` 在反序列化失败时会把**整个**配置文件
+    /// 回退成默认值，若 mode 是枚举，用户只把这一项填错（如 "Sysytem"）就会连带丢掉代理、
+    /// 镜像等无关配置。字符串 + 宽松判定保证「填错只影响本开关，不牵连其他配置」。
+    /// 请勿顺手改成枚举。
+    pub mode: String,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            mode: "auto".to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub proxy: ProxyConfig,
     pub mirror: MirrorConfig,
+    pub node: NodeConfig,
 }
 
 impl AppConfig {
@@ -105,6 +127,15 @@ impl AppConfig {
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("更新配置文件失败: {}", path.display()))?;
         Ok(())
+    }
+
+    /// Node 所有权护栏是否启用：仅显式配置 "system"（忽略大小写与首尾空格）时跳过
+    ///
+    /// 其余任何值——空串、未知值、乱填——都按启用处理：安全闸默认打开，填错不会静默绕过护栏。
+    // 生产调用方由 M0 后续任务的护栏（G1–G6）接入，届时移除该 allow
+    #[allow(dead_code)]
+    pub fn node_guards_enabled(&self) -> bool {
+        self.node.mode.trim().to_lowercase() != "system"
     }
 
     /// 根据配置计算实际生效的代理地址
@@ -167,11 +198,14 @@ mod tests {
         assert_eq!(cfg.proxy.url, None);
         assert_eq!(cfg.mirror.github_mode, "auto");
         assert_eq!(cfg.mirror.npm_registry, "https://registry.npmmirror.com");
+        assert_eq!(cfg.node.mode, "auto");
+        assert!(cfg.node_guards_enabled());
 
         let partial: AppConfig =
             serde_json::from_str(r#"{"proxy":{"url":"127.0.0.1:7890"}}"#).unwrap();
         assert_eq!(partial.proxy.mode, ProxyMode::System);
         assert_eq!(partial.mirror.github_mode, "auto");
+        assert_eq!(partial.node.mode, "auto");
     }
     #[test]
     fn test_custom_mode_serde() {
@@ -195,5 +229,42 @@ mod tests {
         // 自定义模式但地址为空：视为未生效
         cfg.proxy.url = Some("   ".into());
         assert_eq!(cfg.effective_proxy(), None);
+    }
+
+    #[test]
+    fn test_node_mode_system_disables_guards() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"node":{"mode":"system"}}"#).unwrap();
+        assert_eq!(cfg.node.mode, "system");
+        assert!(!cfg.node_guards_enabled());
+
+        // 大小写混写 + 首尾空格：手工编辑的配置仍按 system 识别
+        let sloppy: AppConfig = serde_json::from_str(r#"{"node":{"mode":" System "}}"#).unwrap();
+        assert!(!sloppy.node_guards_enabled());
+    }
+
+    #[test]
+    fn test_node_mode_other_values_keep_guards() {
+        // 安全闸默认打开：未知值、空串、纯空格、auto 大小写变体一律启用护栏
+        for raw in ["auto", "AUTO", "nonsense", "", "   ", "systeme"] {
+            let cfg: AppConfig =
+                serde_json::from_str(&format!(r#"{{"node":{{"mode":"{raw}"}}}}"#)).unwrap();
+            assert!(cfg.node_guards_enabled(), "mode={raw:?} 应保持护栏启用");
+        }
+    }
+
+    #[test]
+    fn test_legacy_config_without_node_field() {
+        // 升级前手工编辑过的 config.json：不含 node 字段，其他配置照常解析
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{"proxy":{"mode":"custom","url":"127.0.0.1:7890"},"mirror":{"npm_registry":"https://registry.npmmirror.com"}}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.proxy.mode, ProxyMode::Custom);
+        assert_eq!(cfg.proxy.url.as_deref(), Some("127.0.0.1:7890"));
+        assert_eq!(cfg.mirror.npm_registry, "https://registry.npmmirror.com");
+        assert_eq!(cfg.mirror.github_mode, "auto");
+        assert_eq!(cfg.mirror.github_mirror, "https://ghproxy.net/");
+        assert_eq!(cfg.node.mode, "auto");
+        assert!(cfg.node_guards_enabled());
     }
 }
