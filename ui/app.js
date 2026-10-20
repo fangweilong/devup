@@ -44,6 +44,21 @@ if (isMac) {
       postCommand("DragWindow");
     });
   }
+
+  // tao 0.37 无应用菜单，Cmd+Q 没有系统级归宿；webview 获得焦点时快捷键
+  // 会作为普通 keydown 进入页面，这里拦截并经 IPC 走与关闭窗口一致的退出链路。
+  window.addEventListener("keydown", (e) => {
+    if (
+      e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.shiftKey &&
+      (e.key === "q" || e.key === "Q")
+    ) {
+      e.preventDefault();
+      postCommand("Quit");
+    }
+  });
 }
 
 // 供 Rust 回调的全局事件接收器

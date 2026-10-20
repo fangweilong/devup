@@ -1,71 +1,8 @@
 use std::time::Duration;
 use reqwest::Client;
 
-#[derive(Clone, Debug)]
-pub struct BuiltinMirror {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub url: &'static str,
-    pub desc: &'static str,
-}
-
-/// 内置 GitHub 加速镜像列表
-pub const BUILTIN_GITHUB_MIRRORS: &[BuiltinMirror] = &[
-    BuiltinMirror {
-        id: "ghproxy",
-        name: "ghproxy.net",
-        url: "https://ghproxy.net/",
-        desc: "通用 GitHub 资产与 Release 镜像加速",
-    },
-    BuiltinMirror {
-        id: "mirror_ghproxy",
-        name: "mirror.ghproxy.com",
-        url: "https://mirror.ghproxy.com/",
-        desc: "节点分布式加速服务",
-    },
-    BuiltinMirror {
-        id: "ghps",
-        name: "ghps.cc",
-        url: "https://ghps.cc/",
-        desc: "高可用 GitHub 文件代理",
-    },
-    BuiltinMirror {
-        id: "gh_ddlc",
-        name: "gh.ddlc.top",
-        url: "https://gh.ddlc.top/",
-        desc: "公益高速 GitHub 文件加速节点",
-    },
-];
-
-/// 内置 npm 镜像源列表
-pub const BUILTIN_NPM_MIRRORS: &[BuiltinMirror] = &[
-    BuiltinMirror {
-        id: "npmmirror",
-        name: "阿里 npmmirror",
-        url: "https://registry.npmmirror.com",
-        desc: "国内官方推荐高速镜像，定时同步官方源",
-    },
-    BuiltinMirror {
-        id: "tencent",
-        name: "腾讯云镜像",
-        url: "https://mirrors.cloud.tencent.com/npm/",
-        desc: "腾讯云公网高速 CDN 镜像",
-    },
-    BuiltinMirror {
-        id: "huawei",
-        name: "华为云镜像",
-        url: "https://repo.huaweicloud.com/repository/npm/",
-        desc: "华为云开源镜像站",
-    },
-    BuiltinMirror {
-        id: "official",
-        name: "npm 官方源",
-        url: "https://registry.npmjs.org",
-        desc: "海外官方源（建议配合全局代理或梯子使用）",
-    },
-];
-
-pub const GITHUB_PROXY_PREFIXES: &[&str] = &[
+/// 内置 GitHub 加速镜像前缀列表（仅自动探测使用；展示名由前端维护）
+pub const BUILTIN_GITHUB_MIRRORS: &[&str] = &[
     "https://ghproxy.net/",
     "https://mirror.ghproxy.com/",
     "https://ghps.cc/",
@@ -114,8 +51,8 @@ pub async fn find_fastest_github_url(client: &Client, original_url: &str) -> Str
     let mut tasks = Vec::new();
 
     // 测试内置加速节点
-    for mirror in BUILTIN_GITHUB_MIRRORS {
-        let candidate_url = get_accelerated_github_url(original_url, mirror.url);
+    for mirror_url in BUILTIN_GITHUB_MIRRORS {
+        let candidate_url = get_accelerated_github_url(original_url, mirror_url);
         let client_clone = client.clone();
         tasks.push(tokio::spawn(async move {
             let start = std::time::Instant::now();
@@ -151,6 +88,6 @@ pub async fn find_fastest_github_url(client: &Client, original_url: &str) -> Str
         best_url
     } else {
         // 如果加速节点都超时，回退到第一个内置加速源（防止直接直连死锁）
-        get_accelerated_github_url(original_url, BUILTIN_GITHUB_MIRRORS[0].url)
+        get_accelerated_github_url(original_url, BUILTIN_GITHUB_MIRRORS[0])
     }
 }
