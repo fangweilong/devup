@@ -403,189 +403,232 @@ function getExecutionPlan(item, action) {
   let notes = "";
 
   switch (item.id) {
-    case "windows_terminal":
+    case "homebrew":
       if (isUninstall) {
-        summary = "即将卸载 Windows Terminal 并从系统中注销应用包。";
-        commands = isWinget
-          ? ["winget uninstall --id Microsoft.WindowsTerminal --exact --silent"]
-          : ['powershell.exe -NoProfile -Command "Get-AppxPackage *WindowsTerminal* | Remove-AppxPackage -ErrorAction SilentlyContinue"'];
-        notes = "卸载操作会注销 Windows Terminal AppX 包，不影响现有配置文件。";
-      } else if (isUpgrade) {
-        summary = `检测到官方新版本 (${item.version || "已装"} → ${item.latest_version || "最新"})，即将执行静默升级。`;
-        commands = [
-          "winget upgrade --id Microsoft.WindowsTerminal --exact --silent --accept-source-agreements --accept-package-agreements",
-          '# 备用回退: powershell.exe -Command "Add-AppxPackage -Path %TEMP%\\devup-cache\\WindowsTerminal.msixbundle"'
-        ];
-        notes = "DevUp 会优先通过 WinGet 静默升级；若不支持则自动通过国内 GitHub 镜像下载最新 MSIXBundle 覆盖部署。";
+        summary = "即将卸载 Homebrew 包管理器。";
+        commands = ['/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"'];
+        notes = "卸载 Homebrew 会同时移除通过 brew 安装的依赖项。";
       } else {
-        summary = "即将通过微软官方原生 MSIXBundle 离线包部署 Windows Terminal。";
+        summary = "通过清华大学开源镜像站加速安装 Homebrew。";
         commands = [
-          "# 1. 从国内 GitHub 优选节点高速下载 Microsoft.WindowsTerminal MSIXBundle",
-          'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-AppxPackage -Path \'%TEMP%\\devup-cache\\WindowsTerminal.msixbundle\'"'
+          'export HOMEBREW_BREW_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git"',
+          'export HOMEBREW_CORE_GIT_REMOTE="https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/homebrew-core.git"',
+          'export HOMEBREW_BOTTLE_DOMAIN="https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles"',
+          '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
         ];
-        notes = "微软原生 AppX 方式安装，无需提权弹窗，安装完成后开箱即用。";
+        notes = "DevUp 已为您预置国内清华高速镜像加速变量，安装脚本将在系统终端中执行。";
+      }
+      break;
+
+    case "windows_terminal":
+      {
+        const termVer = (item.latest_version || "v1.25.2733.0").replace(/^v/, "");
+        if (isUninstall) {
+          summary = "即将卸载 Windows Terminal 并从系统中注销应用包。";
+          commands = isWinget
+            ? ["winget uninstall --id Microsoft.WindowsTerminal --exact --silent"]
+            : ['powershell.exe -NoProfile -Command "Get-AppxPackage *WindowsTerminal* | Remove-AppxPackage -ErrorAction SilentlyContinue"'];
+          notes = "卸载操作会注销 Windows Terminal AppX 包，不影响现有配置文件。";
+        } else if (isUpgrade) {
+          summary = `检测到官方新版本 (${item.version || "已装"} → ${item.latest_version || "最新"})，即将执行静默升级。`;
+          commands = [
+            "winget upgrade --id Microsoft.WindowsTerminal --exact --silent --accept-source-agreements --accept-package-agreements",
+            `# 备用回退: powershell.exe -Command "Add-AppxPackage -Path %TEMP%\\devup-cache\\WindowsTerminal_${termVer}.msixbundle"`
+          ];
+          notes = "DevUp 会优先通过 WinGet 静默升级；若不支持则自动通过加速镜像下载最新 MSIXBundle 覆盖部署。";
+        } else {
+          summary = `即将通过微软官方原生 MSIXBundle 离线包部署 Windows Terminal (${termVer})。`;
+          commands = [
+            `# 1. 从加速节点高速下载 Microsoft.WindowsTerminal_${termVer} MSIXBundle`,
+            `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-AppxPackage -Path '%TEMP%\\devup-cache\\WindowsTerminal_${termVer}.msixbundle'"`
+          ];
+          notes = "微软原生 AppX 方式安装，无需提权弹窗，安装完成后开箱即用。";
+        }
       }
       break;
 
     case "powershell7":
-      if (isUninstall) {
-        summary = "即将从系统中卸载 PowerShell 7 核心运行库。";
-        commands = isWinget
-          ? ["winget uninstall --id Microsoft.PowerShell --exact --silent"]
-          : ['powershell.exe -NoProfile -Command "Get-Package -Name \'PowerShell 7*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
-        notes = "卸载后资源管理器右键快捷菜单的“在 PowerShell 7 中打开”将被移除。";
-      } else {
-        const opName = isUpgrade ? "版本升级" : (isReinstall ? "重新安装" : "全自动静默安装");
-        summary = `通过国内 GitHub 镜像下载最新 MSI 并执行${opName}。`;
-        commands = [
-          "# 1. 测速并优选 GitHub 镜像下载: PowerShell-7.4.6-win-x64.msi",
-          'msiexec.exe /i "%TEMP%\\devup-cache\\PowerShell-7.4.6-win-x64.msi" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1'
-        ];
-        notes = "安装参数已启用 ADD_EXPLORER_CONTEXT_MENU，自动集成右键快捷菜单。";
+      {
+        const psVer = (item.latest_version || "v7.4.7").replace(/^v/, "");
+        if (isUninstall) {
+          summary = "即将从系统中卸载 PowerShell 7 核心运行库。";
+          commands = isWinget
+            ? ["winget uninstall --id Microsoft.PowerShell --exact --silent"]
+            : ['powershell.exe -NoProfile -Command "Get-Package -Name \'PowerShell 7*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
+          notes = "卸载后资源管理器右键快捷菜单的“在 PowerShell 7 中打开”将被移除。";
+        } else {
+          const opName = isUpgrade ? "版本升级" : (isReinstall ? "重新安装" : "全自动静默安装");
+          summary = `通过加速镜像下载最新 MSI (${psVer}) 并执行${opName}。`;
+          commands = [
+            `# 1. 优选镜像下载: PowerShell-${psVer}-win-x64.msi`,
+            `msiexec.exe /i "%TEMP%\\devup-cache\\PowerShell-${psVer}-win-x64.msi" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1`
+          ];
+          notes = "安装参数已启用 ADD_EXPLORER_CONTEXT_MENU，自动集成右键快捷菜单。";
+        }
       }
       break;
 
     case "nodejs":
-      if (isUninstall) {
-        summary = "即将卸载 Node.js LTS 运行环境。";
-        commands = ['powershell.exe -NoProfile -Command "Get-Package -Name \'Node.js*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
-        notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
-      } else {
-        const opName = isUpgrade ? "升级" : (isReinstall ? "重装" : "安装");
-        summary = `从阿里 npmmirror 官方镜像下载 Node.js LTS MSI 并执行${opName}。`;
-        commands = [
-          "# 1. 从 https://registry.npmmirror.com/-/binary/node/ 下载 node-v20.18.0-x64.msi",
-          'msiexec.exe /i "%TEMP%\\devup-cache\\node-v20.18.0-x64.msi" /quiet /norestart'
-        ];
-        notes = "静默安装后自动写入系统 PATH，提供全局 node 与 npm 命令。";
+      {
+        const nodeVer = item.latest_version || "v24.22.0";
+        if (isUninstall) {
+          summary = "即将卸载 Node.js LTS 运行环境。";
+          commands = ['powershell.exe -NoProfile -Command "Get-Package -Name \'Node.js*\' -ErrorAction SilentlyContinue | Uninstall-Package -Force"'];
+          notes = "⚠️ 警告：卸载 Node.js 将导致依赖 Node 的所有 AI Coding Agents (Claude Code, Codex, Pi 等) 无法运行。";
+        } else {
+          const opName = isUpgrade ? "升级" : (isReinstall ? "重装" : "安装");
+          summary = `从阿里 npmmirror 官方镜像下载 Node.js LTS (${nodeVer}) 并执行${opName}。`;
+          commands = [
+            `# 1. 下载 node-${nodeVer}-x64.msi`,
+            `msiexec.exe /i "%TEMP%\\devup-cache\\node-${nodeVer}-x64.msi" /quiet /norestart`
+          ];
+          notes = "静默安装后自动写入系统 PATH，提供全局 node 与 npm 命令。";
+        }
       }
       break;
 
     case "git":
-      if (isUninstall) {
-        summary = "即将卸载 Git for Windows 版本管理工具。";
-        commands = isWinget
-          ? ["winget uninstall --id Git.Git --exact --silent"]
-          : ['"C:\\Program Files\\Git\\unins000.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES'];
-        notes = "卸载后将移除全局 git 命令与 Git Bash 终端。";
-      } else if (isUpgrade) {
-        summary = `检测到 Git 新版本 (${item.version || "已装"} → ${item.latest_version || "最新"})，即将执行静默更新。`;
-        commands = [
-          "winget upgrade --id Git.Git --exact --silent --accept-source-agreements --accept-package-agreements",
-          '# 备用回退: Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
-        ];
-        notes = "优先调用 WinGet 原生更新；若未注册则自动下载 Git for Windows 安装包静默覆盖升级。";
-      } else {
-        summary = "优选国内 GitHub 加速镜像下载 Git for Windows 并执行静默安装。";
-        commands = [
-          "# 1. 从国内节点高速下载 Git-2.56.0.2-64-bit.exe 到临时目录",
-          'Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
-        ];
-        notes = "预设最佳 Windows 编码与换行符配置，自带 Git Credential Manager。";
+      {
+        const gitVer = item.latest_version || "最新版";
+        if (isUninstall) {
+          summary = "即将卸载 Git for Windows 版本管理工具。";
+          commands = isWinget
+            ? ["winget uninstall --id Git.Git --exact --silent"]
+            : ['"C:\\Program Files\\Git\\unins000.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES'];
+          notes = "卸载后将移除全局 git 命令与 Git Bash 终端。";
+        } else if (isUpgrade) {
+          summary = `检测到 Git 新版本 (${item.version || "已装"} → ${gitVer})，即将执行静默更新。`;
+          commands = [
+            "winget upgrade --id Git.Git --exact --silent --accept-source-agreements --accept-package-agreements",
+            '# 备用回退: Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
+          ];
+          notes = "优先调用 WinGet 原生更新；若未注册则自动通过加速节点下载安装包静默覆盖升级。";
+        } else {
+          summary = `优选 GitHub 加速镜像下载 Git for Windows (${gitVer}) 并执行静默安装。`;
+          commands = [
+            `# 1. 从加速节点高速下载 Git for Windows (${gitVer}) 安装包到临时目录`,
+            'Git-Installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS'
+          ];
+          notes = "预设最佳 Windows 编码与换行符配置，自带 Git Credential Manager。";
+        }
       }
       break;
 
     case "claudecode":
-      if (isUninstall) {
-        summary = "即将卸载 Claude Code 全局 npm 包并清理残留二进制。";
-        commands = [
-          "npm uninstall -g @anthropic-ai/claude-code",
-          "# 自动清理可能存在的原生文件: %USERPROFILE%\\.local\\bin\\claude.exe"
-        ];
-        notes = "卸载后全局 claude 命令将被移除，用户本地配置与项目上下文保持不变。";
-      } else if (isUpgrade && item.installed) {
-        summary = `即将升级 Claude Code (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
-        commands = [
-          "claude update",
-          `# 备用回退: npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com${proxyNotice}`
-        ];
-        notes = "优先使用 Anthropic 官方内置更新命令 `claude update`；若受阻则自动通过 npmmirror 镜像覆盖。";
-      } else {
-        summary = "使用国内官方 npmmirror 镜像源全局安装 Claude Code。";
-        commands = [`npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com${proxyNotice}`];
-        notes = `${proxyTip} 安装后直接在终端执行 \`claude\` 即可进入交互会话。`;
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        if (isUninstall) {
+          summary = "即将卸载 Claude Code 全局 npm 包并清理残留二进制。";
+          commands = [
+            "npm uninstall -g @anthropic-ai/claude-code",
+            "# 自动清理可能存在的原生文件: %USERPROFILE%\\.local\\bin\\claude.exe"
+          ];
+          notes = "卸载后全局 claude 命令将被移除，用户本地配置与项目上下文保持不变。";
+        } else if (isUpgrade && item.installed) {
+          summary = `即将升级 Claude Code (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+          commands = [
+            "claude update",
+            `# 备用回退: npm install -g @anthropic-ai/claude-code --registry=${reg}${proxyNotice}`
+          ];
+          notes = "优先使用 Anthropic 官方内置更新命令 `claude update`；若受阻则自动通过配置的 npm 镜像覆盖。";
+        } else {
+          summary = `使用配置的 npm 镜像源 (${reg}) 全局安装 Claude Code。`;
+          commands = [`npm install -g @anthropic-ai/claude-code --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装后直接在终端执行 \`claude\` 即可进入交互会话。`;
+        }
       }
       break;
 
     case "codex":
-      if (isUninstall) {
-        summary = "即将卸载 OpenAI Codex 全局 CLI 包。";
-        commands = ["npm uninstall -g @openai/codex"];
-        notes = "卸载后全局 codex 命令将被移除。";
-      } else {
-        const opName = isUpgrade ? "升级" : (isReinstall ? "重新安装" : "安装");
-        summary = `使用国内 npmmirror 镜像源${opName} OpenAI Codex。`;
-        commands = [`npm install -g @openai/codex --registry=https://registry.npmmirror.com${proxyNotice}`];
-        notes = `${proxyTip} 安装完成后终端输入 \`codex\` 即可使用。`;
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        if (isUninstall) {
+          summary = "即将卸载 OpenAI Codex 全局 CLI 包。";
+          commands = ["npm uninstall -g @openai/codex"];
+          notes = "卸载后全局 codex 命令将被移除。";
+        } else {
+          const opName = isUpgrade ? "升级" : (isReinstall ? "重新安装" : "安装");
+          summary = `使用配置的 npm 镜像源 (${reg}) ${opName} OpenAI Codex。`;
+          commands = [`npm install -g @openai/codex --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装完成后终端输入 \`codex\` 即可使用。`;
+        }
       }
       break;
 
     case "pi":
-      if (isUninstall) {
-        summary = "即将卸载 Pi Agent 并清理本地数据缓存。";
-        commands = [
-          "npm uninstall -g @earendil-works/pi",
-          "# 自动清理本地应用数据目录: %LOCALAPPDATA%\\pi"
-        ];
-        notes = "卸载后全局 pi 命令将被移除。";
-      } else if (isUpgrade && item.installed) {
-        summary = `即将升级 Pi Agent (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
-        commands = [
-          "pi update",
-          `# 备用回退: npm install -g @earendil-works/pi --registry=https://registry.npmmirror.com${proxyNotice}`
-        ];
-        notes = "官方原生更新器会无缝保留您在本地的模型连接配置。";
-      } else {
-        summary = "使用国内 npmmirror 镜像源安装 Earendil Works Pi Agent。";
-        commands = [`npm install -g @earendil-works/pi --registry=https://registry.npmmirror.com${proxyNotice}`];
-        notes = `${proxyTip} 安装后终端输入 \`pi\` 即可体验统一 Coding Agent 架构。`;
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        if (isUninstall) {
+          summary = "即将卸载 Pi Agent 并清理本地数据缓存。";
+          commands = [
+            "npm uninstall -g @earendil-works/pi",
+            "# 自动清理本地应用数据目录: %LOCALAPPDATA%\\pi"
+          ];
+          notes = "卸载后全局 pi 命令将被移除。";
+        } else if (isUpgrade && item.installed) {
+          summary = `即将升级 Pi Agent (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+          commands = [
+            "pi update",
+            `# 备用回退: npm install -g @earendil-works/pi --registry=${reg}${proxyNotice}`
+          ];
+          notes = "官方原生更新器会无缝保留您在本地的模型连接配置。";
+        } else {
+          summary = `使用配置的 npm 镜像源 (${reg}) 安装 Earendil Works Pi Agent。`;
+          commands = [`npm install -g @earendil-works/pi --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装后终端输入 \`pi\` 即可体验统一 Coding Agent 架构。`;
+        }
       }
       break;
 
     case "oh-my-pi":
-      if (isUninstall) {
-        summary = "即将卸载 oh-my-pi (omp) 智能体并清理数据目录。";
-        commands = [
-          "npm uninstall -g @oh-my-pi/pi-coding-agent",
-          "# 自动清理本地原生目录: %LOCALAPPDATA%\\omp"
-        ];
-        notes = "卸载后全局 omp 命令将被移除。";
-      } else if (isUpgrade && item.installed) {
-        summary = `即将升级 oh-my-pi (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
-        commands = [
-          "omp update",
-          `# 备用回退: npm install -g @oh-my-pi/pi-coding-agent --registry=https://registry.npmmirror.com${proxyNotice}`
-        ];
-        notes = "原生自升级命令会自动同步最新的 subagent 架构与工具链。";
-      } else {
-        summary = "通过国内 npmmirror 镜像源安装 oh-my-pi (omp) 智能体。";
-        commands = [`npm install -g @oh-my-pi/pi-coding-agent --registry=https://registry.npmmirror.com${proxyNotice}`];
-        notes = `${proxyTip} 安装完成后在终端输入 \`omp\` 即可唤起全功能 AI 编程会话。`;
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        if (isUninstall) {
+          summary = "即将卸载 oh-my-pi (omp) 智能体并清理数据目录。";
+          commands = [
+            "npm uninstall -g @oh-my-pi/pi-coding-agent",
+            "# 自动清理本地原生目录: %LOCALAPPDATA%\\omp"
+          ];
+          notes = "卸载后全局 omp 命令将被移除。";
+        } else if (isUpgrade && item.installed) {
+          summary = `即将升级 oh-my-pi (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+          commands = [
+            "omp update",
+            `# 备用回退: npm install -g @oh-my-pi/pi-coding-agent --registry=${reg}${proxyNotice}`
+          ];
+          notes = "原生自升级命令会自动同步最新的 subagent 架构与工具链。";
+        } else {
+          summary = `通过配置的 npm 镜像源 (${reg}) 安装 oh-my-pi (omp) 智能体。`;
+          commands = [`npm install -g @oh-my-pi/pi-coding-agent --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装完成后在终端输入 \`omp\` 即可唤起全功能 AI 编程会话。`;
+        }
       }
       break;
 
     case "opencode":
-      if (isUninstall) {
-        summary = "即将卸载 OpenCode 及其关联的全局 npm 包。";
-        commands = [
-          "npm uninstall -g @opencode/cli",
-          "npm uninstall -g opencode-ai"
-        ];
-        notes = "同时清理新老版本可能注册的全局包名。";
-      } else if (isUpgrade && item.installed) {
-        summary = `即将升级 OpenCode (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
-        commands = [
-          "opencode upgrade",
-          `# 备用回退: npm install -g @opencode/cli --registry=https://registry.npmmirror.com${proxyNotice}`
-        ];
-        notes = "优先调用官方原生升级命令，保持与官方代码库实时同步。";
-      } else {
-        summary = "通过国内 npmmirror 镜像源安装 OpenCode 全局 CLI。";
-        commands = [`npm install -g @opencode/cli --registry=https://registry.npmmirror.com${proxyNotice}`];
-        notes = `${proxyTip} 安装后在终端键入 \`opencode\` 即可使用。`;
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        if (isUninstall) {
+          summary = "即将卸载 OpenCode 及其关联的全局 npm 包。";
+          commands = [
+            "npm uninstall -g @opencode/cli",
+            "npm uninstall -g opencode-ai"
+          ];
+          notes = "同时清理新老版本可能注册的全局包名。";
+        } else if (isUpgrade && item.installed) {
+          summary = `即将升级 OpenCode (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+          commands = [
+            "opencode upgrade",
+            `# 备用回退: npm install -g @opencode/cli --registry=${reg}${proxyNotice}`
+          ];
+          notes = "优先调用官方原生升级命令，保持与官方代码库实时同步。";
+        } else {
+          summary = `通过配置的 npm 镜像源 (${reg}) 安装 OpenCode 全局 CLI。`;
+          commands = [`npm install -g @opencode/cli --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装后在终端键入 \`opencode\` 即可使用。`;
+        }
       }
       break;
-
     default:
       summary = `即将执行 ${item.name} 的 ${tagText} 操作。`;
       commands = [`# 执行目标: ${item.id} (${action})`];

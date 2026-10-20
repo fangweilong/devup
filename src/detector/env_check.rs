@@ -387,6 +387,24 @@ impl Detector {
 
                 if let Ok(resp) = res {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        // 从 GitHub Release 元数据中提取对应系统的安装包真实直链
+                        if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
+                            for asset in assets {
+                                if let (Some(name), Some(url)) = (
+                                    asset.get("name").and_then(|n| n.as_str()),
+                                    asset.get("browser_download_url").and_then(|u| u.as_str()),
+                                ) {
+                                    if id == "git" && name.ends_with("64-bit.exe") && !name.contains("pdbs") {
+                                        Self::set_latest_version("git_download_url", url.to_string());
+                                    } else if id == "powershell7" && name.ends_with("win-x64.msi") {
+                                        Self::set_latest_version("powershell_download_url", url.to_string());
+                                    } else if id == "windows_terminal" && name.ends_with(".msixbundle") && !name.contains("PreinstallKit") {
+                                        Self::set_latest_version("windows_terminal_download_url", url.to_string());
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
                             let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
                             return Some((id.to_string(), clean_tag.to_string()));

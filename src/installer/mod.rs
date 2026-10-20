@@ -290,7 +290,8 @@ impl InstallerEngine {
             "powershell7" => {
                 let ver = Detector::get_latest_version("powershell7").unwrap_or_else(|| "v7.4.7".to_string());
                 let raw_ver = ver.trim_start_matches('v');
-                let raw_url = format!("https://github.com/PowerShell/PowerShell/releases/download/{}/PowerShell-{}-win-x64.msi", ver, raw_ver);
+                let default_ps_url = format!("https://github.com/PowerShell/PowerShell/releases/download/{}/PowerShell-{}-win-x64.msi", ver, raw_ver);
+                let raw_url = Detector::get_latest_version("powershell_download_url").unwrap_or(default_ps_url);
                 log(format!("正在根据配置解析 PowerShell 7 ({}) GitHub 下载源 (模式: {})...", ver, mirror_config.github_mode));
                 let download_url = crate::network::mirrors::resolve_github_download_url(&client, &raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
                 log(format!("选定加速下载链接: {}", download_url));
@@ -321,7 +322,8 @@ impl InstallerEngine {
 
                 let ver = Detector::get_latest_version("windows_terminal").unwrap_or_else(|| "v1.25.2733.0".to_string());
                 let raw_ver = ver.trim_start_matches('v');
-                let raw_url = format!("https://github.com/microsoft/terminal/releases/download/{}/Microsoft.WindowsTerminal_{}_8wekyb3d8bbwe.msixbundle", ver, raw_ver);
+                let default_wt_url = format!("https://github.com/microsoft/terminal/releases/download/{}/Microsoft.WindowsTerminal_{}_8wekyb3d8bbwe.msixbundle", ver, raw_ver);
+                let raw_url = Detector::get_latest_version("windows_terminal_download_url").unwrap_or(default_wt_url);
                 log(format!("正在根据配置解析 Windows Terminal ({}) GitHub 下载源 (模式: {})...", ver, mirror_config.github_mode));
                 let download_url = crate::network::mirrors::resolve_github_download_url(&client, &raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
                 log(format!("选定加速下载链接: {}", download_url));
@@ -367,9 +369,10 @@ impl InstallerEngine {
                     log("WinGet 更新回退，改用官网安装包...".into());
                 }
 
-                let raw_url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe";
+                let default_git_url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.2/Git-2.56.0.2-64-bit.exe".to_string();
+                let raw_url = Detector::get_latest_version("git_download_url").unwrap_or(default_git_url);
                 log(format!("正在根据配置解析 Git for Windows 国内加速地址 (模式: {})...", mirror_config.github_mode));
-                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, &raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
 
                 let dest = temp_dir.join("Git-Installer.exe");
                 let tx_progress = event_sender.clone();
