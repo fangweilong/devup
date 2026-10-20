@@ -6,7 +6,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::network::downloader::{create_http_client, download_file};
-use crate::network::mirrors::find_fastest_github_url;
 use crate::state::AppEvent;
 
 pub const GITHUB_REPO: &str = "fangweilong/devup";
@@ -125,6 +124,7 @@ impl SelfUpdater {
     pub async fn execute_update(
         download_url: &str,
         proxy_url: Option<String>,
+        mirror_config: crate::config::MirrorConfig,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
         let client = create_http_client(proxy_url.as_deref())?;
@@ -150,20 +150,24 @@ impl SelfUpdater {
 
         let _ = event_sender.send(AppEvent::Log {
             target_id: "self_update".to_string(),
-            message: "正在并发测速，优选最快下载源...".to_string(),
+            message: "正在根据网络与镜像配置解析最优下载源...".to_string(),
         });
 
-        // 利用内置镜像引擎加速下载
-        let fastest_url = find_fastest_github_url(&client, download_url).await;
+        // 利用配置的镜像规则或自动测速加速下载
+        let target_url = crate::network::mirrors::resolve_github_download_url(
+            &client,
+            download_url,
+            &mirror_config.github_mode,
+            &mirror_config.github_mirror,
+        ).await;
         let _ = event_sender.send(AppEvent::Log {
             target_id: "self_update".to_string(),
-            message: format!("已选定下载源: {}", fastest_url),
+            message: format!("已选定下载源: {}", target_url),
         });
-
         let event_tx_clone = event_sender.clone();
         download_file(
             &client,
-            &fastest_url,
+            &target_url,
             &new_exe,
             "self_update",
             move |progress| {

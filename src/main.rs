@@ -146,31 +146,69 @@ fn main() -> anyhow::Result<()> {
                     let tx = tx_for_ipc.clone();
                     let config_for_refresh = config_for_ipc.clone();
                     let active_for_refresh = active_proxy_for_ipc.clone();
-                    rt_for_ipc.spawn_blocking(move || {
-                        // system 模式重新嗅探；custom/direct 按配置重算
-                        let (proxy, mode, url) = {
+                    rt_for_ipc.spawn(async move {
+                        // 1. 动态刷新进程 PATH 环境变量（读取系统注册表最新 PATH）
+                        crate::platform::refresh_process_path();
+
+                        // 2. system 模式重新嗅探；custom/direct 按配置重算
+                        let (proxy, mode, url, gh_mode, gh_mirror, npm_reg) = {
                             let cfg = config_for_refresh.lock().unwrap();
                             (
                                 cfg.effective_proxy(),
                                 cfg.proxy.mode.clone(),
                                 cfg.proxy.url.clone(),
+                                cfg.mirror.github_mode.clone(),
+                                cfg.mirror.github_mirror.clone(),
+                                cfg.mirror.npm_registry.clone(),
                             )
                         };
                         *active_for_refresh.lock().unwrap() = proxy.clone();
                         let _ = tx.send(AppEvent::ProxyStatus {
-                            proxy,
+                            proxy: proxy.clone(),
                             mode,
                             url,
+                            github_mode: gh_mode,
+                            github_mirror: gh_mirror,
+                            npm_registry: npm_reg.clone(),
                         });
+
+                        // 3. 立即下发本地已装软件探测结果
                         let statuses = Detector::detect_all();
+                        let count = statuses.len();
                         let _ = tx.send(AppEvent::StatusList(statuses));
+
+                        // 4. 并发联网拉取各组件官方最新版本并同步
+                        if let Ok(client) = crate::network::downloader::create_http_client(proxy.as_deref()) {
+                            let (updated, fetched_list) = Detector::fetch_latest_versions_online(&client, &npm_reg).await;
+                            if !fetched_list.is_empty() {
+                                let summary = fetched_list
+                                    .iter()
+                                    .map(|(id, v)| format!("{}: {}", id, v))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let _ = tx.send(AppEvent::Log {
+                                    target_id: "system".to_string(),
+                                    message: format!("🌐 官方最新版本已从远程实时同步: {}", summary),
+                                });
+                            }
+                            if updated {
+                                let refreshed = Detector::detect_all();
+                                let _ = tx.send(AppEvent::StatusList(refreshed));
+                            }
+                        }
+
+                        let _ = tx.send(AppEvent::Log {
+                            target_id: "system".to_string(),
+                            message: format!("✅ 本地环境与组件检测完成 (共扫描 {} 项组件)", count),
+                        });
                     });
                 }
                 Ok(IpcCommand::Install { target_id }) => {
                     let tx = tx_for_ipc.clone();
                     let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
+                    let mirror_cfg = config_for_ipc.lock().unwrap().mirror.clone();
                     rt_for_ipc.spawn(async move {
-                        if let Err(e) = InstallerEngine::install_target(&target_id, proxy_str, tx.clone()).await {
+                        if let Err(e) = InstallerEngine::install_target(&target_id, proxy_str, mirror_cfg, tx.clone()).await {
                             let _ = tx.send(AppEvent::InstallError {
                                 target_id,
                                 error: format!("{:#}", e),
@@ -190,17 +228,72 @@ fn main() -> anyhow::Result<()> {
                     });
                 }
                 Ok(IpcCommand::SetProxy { mode, url }) => {
-                    let (proxy, mode, url) = {
+                    let (proxy, mode, url, gh_mode, gh_mirror, npm_reg) = {
                         let mut cfg = config_for_ipc.lock().unwrap();
                         cfg.proxy = ProxyConfig { mode, url };
                         if let Err(e) = cfg.save() {
                             eprintln!("持久化代理配置失败: {:#}", e);
                         }
                         let p = cfg.effective_proxy();
-                        (p, cfg.proxy.mode.clone(), cfg.proxy.url.clone())
+                        (
+                            p,
+                            cfg.proxy.mode.clone(),
+                            cfg.proxy.url.clone(),
+                            cfg.mirror.github_mode.clone(),
+                            cfg.mirror.github_mirror.clone(),
+                            cfg.mirror.npm_registry.clone(),
+                        )
                     };
                     *active_proxy_for_ipc.lock().unwrap() = proxy.clone();
-                    let _ = tx_for_ipc.send(AppEvent::ProxyStatus { proxy, mode, url });
+                    let _ = tx_for_ipc.send(AppEvent::ProxyStatus {
+                        proxy,
+                        mode,
+                        url,
+                        github_mode: gh_mode,
+                        github_mirror: gh_mirror,
+                        npm_registry: npm_reg,
+                    });
+                }
+                Ok(IpcCommand::SetNetworkConfig {
+                    proxy_mode,
+                    proxy_url,
+                    github_mode,
+                    github_mirror,
+                    npm_registry,
+                }) => {
+                    let (proxy, mode, url, gh_mode, gh_mirror, npm_reg) = {
+                        let mut cfg = config_for_ipc.lock().unwrap();
+                        cfg.proxy = ProxyConfig {
+                            mode: proxy_mode,
+                            url: proxy_url,
+                        };
+                        cfg.mirror = crate::config::MirrorConfig {
+                            github_mode,
+                            github_mirror,
+                            npm_registry,
+                        };
+                        if let Err(e) = cfg.save() {
+                            eprintln!("持久化网络与镜像配置失败: {:#}", e);
+                        }
+                        let p = cfg.effective_proxy();
+                        (
+                            p,
+                            cfg.proxy.mode.clone(),
+                            cfg.proxy.url.clone(),
+                            cfg.mirror.github_mode.clone(),
+                            cfg.mirror.github_mirror.clone(),
+                            cfg.mirror.npm_registry.clone(),
+                        )
+                    };
+                    *active_proxy_for_ipc.lock().unwrap() = proxy.clone();
+                    let _ = tx_for_ipc.send(AppEvent::ProxyStatus {
+                        proxy,
+                        mode,
+                        url,
+                        github_mode: gh_mode,
+                        github_mirror: gh_mirror,
+                        npm_registry: npm_reg,
+                    });
                 }
                 Ok(IpcCommand::OpenUrl { url }) => {
                     platform::open_url(&url);
@@ -242,8 +335,9 @@ fn main() -> anyhow::Result<()> {
                 Ok(IpcCommand::PerformSelfUpdate { download_url }) => {
                     let tx = tx_for_ipc.clone();
                     let proxy_str = active_proxy_for_ipc.lock().unwrap().clone();
+                    let mirror_cfg = config_for_ipc.lock().unwrap().mirror.clone();
                     rt_for_ipc.spawn(async move {
-                        if let Err(e) = SelfUpdater::execute_update(&download_url, proxy_str, tx.clone()).await {
+                        if let Err(e) = SelfUpdater::execute_update(&download_url, proxy_str, mirror_cfg, tx.clone()).await {
                             let _ = tx.send(AppEvent::InstallError {
                                 target_id: "self_update".to_string(),
                                 error: format!("自升级失败: {:#}", e),
@@ -260,18 +354,51 @@ fn main() -> anyhow::Result<()> {
 
     // 4. 首次加载时，触发一次初始状态感知
     {
+        crate::platform::refresh_process_path();
         let initial_proxy = active_proxy.lock().unwrap().clone();
-        let (mode, url) = {
+        let (mode, url, gh_mode, gh_mirror, npm_reg) = {
             let cfg = app_config.lock().unwrap();
-            (cfg.proxy.mode.clone(), cfg.proxy.url.clone())
+            (
+                cfg.proxy.mode.clone(),
+                cfg.proxy.url.clone(),
+                cfg.mirror.github_mode.clone(),
+                cfg.mirror.github_mirror.clone(),
+                cfg.mirror.npm_registry.clone(),
+            )
         };
         let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::ProxyStatus {
-            proxy: initial_proxy,
+            proxy: initial_proxy.clone(),
             mode,
             url,
+            github_mode: gh_mode,
+            github_mirror: gh_mirror,
+            npm_registry: npm_reg.clone(),
         }));
         let statuses = Detector::detect_all();
         let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::StatusList(statuses)));
+
+        // 启动时在后台静默拉取一次最新版本并更新
+        let tx_for_init = tokio_event_tx.clone();
+        rt.spawn(async move {
+            if let Ok(client) = crate::network::downloader::create_http_client(initial_proxy.as_deref()) {
+                let (updated, fetched_list) = Detector::fetch_latest_versions_online(&client, &npm_reg).await;
+                if !fetched_list.is_empty() {
+                    let summary = fetched_list
+                        .iter()
+                        .map(|(id, v)| format!("{}: {}", id, v))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = tx_for_init.send(AppEvent::Log {
+                        target_id: "system".to_string(),
+                        message: format!("🌐 官方最新版本已从远程实时同步: {}", summary),
+                    });
+                }
+                if updated {
+                    let refreshed = Detector::detect_all();
+                    let _ = tx_for_init.send(AppEvent::StatusList(refreshed));
+                }
+            }
+        });
     }
 
     // 5. 事件循环驱动

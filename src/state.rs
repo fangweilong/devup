@@ -14,6 +14,14 @@ pub enum IpcCommand {
         mode: ProxyMode,
         url: Option<String>,
     },
+    /// 设置网络与镜像源配置（代理 + GitHub 镜像 + npm 源）
+    SetNetworkConfig {
+        proxy_mode: ProxyMode,
+        proxy_url: Option<String>,
+        github_mode: String,
+        github_mirror: String,
+        npm_registry: String,
+    },
     OpenUrl { url: String },
     CheckUpdate,
     PerformSelfUpdate { download_url: String },
@@ -25,11 +33,14 @@ pub enum IpcCommand {
 #[serde(tag = "type", content = "data")]
 pub enum AppEvent {
     StatusList(Vec<SoftwareStatus>),
-    /// 当前代理配置与实际生效地址
+    /// 当前网络、代理配置与镜像信息
     ProxyStatus {
         proxy: Option<String>,
         mode: ProxyMode,
         url: Option<String>,
+        github_mode: String,
+        github_mirror: String,
+        npm_registry: String,
     },
     Log { target_id: String, message: String },
     Progress(DownloadProgress),

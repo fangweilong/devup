@@ -4,6 +4,10 @@ let state = {
   proxy: null,
   proxyMode: "system",
   proxyUrl: null,
+  githubMode: "auto",
+  githubMirror: "https://ghproxy.net/",
+  npmRegistry: "https://registry.npmmirror.com",
+  isRefreshing: false,
   activeTaskId: null,
   activeFilter: "all",
   pendingUninstallId: null,
@@ -48,12 +52,21 @@ window.onEvent = function (event) {
     case "StatusList":
       state.softwares = event.data;
       renderAll();
+      const btnRefresh = document.getElementById("btn-refresh");
+      if (btnRefresh) {
+        btnRefresh.classList.remove("is-spinning");
+        btnRefresh.disabled = false;
+      }
+      state.isRefreshing = false;
       break;
 
     case "ProxyStatus":
       state.proxy = event.data.proxy;
       state.proxyMode = event.data.mode || "system";
       state.proxyUrl = event.data.url;
+      state.githubMode = event.data.github_mode || "auto";
+      state.githubMirror = event.data.github_mirror || "https://ghproxy.net/";
+      state.npmRegistry = event.data.npm_registry || "https://registry.npmmirror.com";
       updateProxyBadge();
       break;
 
@@ -106,41 +119,112 @@ function updateProxyBadge() {
   badge.classList.toggle("pill-custom", state.proxyMode === "custom");
   badge.classList.toggle("pill-direct", state.proxyMode === "direct");
 
+  let proxyLabel = "";
   if (state.proxyMode === "custom") {
-    text.textContent = state.proxy ? `自定义代理: ${state.proxy}` : "自定义代理未生效";
-    badge.title = "正在使用配置的固定代理地址（已持久化），点击可修改";
+    proxyLabel = state.proxy ? `自定义代理` : "自定义代理未生效";
   } else if (state.proxyMode === "direct") {
-    text.textContent = "直连模式 (禁用代理)";
-    badge.title = "所有请求均直连发出，不使用任何代理，点击可修改";
+    proxyLabel = "直连模式";
   } else if (state.proxy) {
-    text.textContent = `系统代理: ${state.proxy}`;
-    badge.title = "已自动感知系统代理，网络请求与 npm 将自动透传，点击可配置";
+    proxyLabel = `系统代理`;
   } else {
-    text.textContent = "国内多源加速集群 (免翻)";
-    badge.title = "正在使用国内 GitHub/npm 高速镜像加速下载，点击可配置代理";
+    proxyLabel = "加速集群";
   }
+
+  let ghLabel = "";
+  if (state.githubMode === "direct") {
+    ghLabel = "GitHub直连";
+  } else if (state.githubMode === "auto") {
+    ghLabel = "GH自动测速";
+  } else {
+    try {
+      const parsed = new URL(state.githubMirror);
+      ghLabel = `GH:${parsed.hostname}`;
+    } catch {
+      ghLabel = "GH加速";
+    }
+  }
+
+  text.textContent = `${proxyLabel} · ${ghLabel}`;
+  badge.title = `【网络与镜像配置】\n代理: ${state.proxy || "无"} (${state.proxyMode})\nGitHub镜像: ${state.githubMode === "auto" ? "并发自动测速" : state.githubMirror}\nnpm镜像: ${state.npmRegistry}\n点击修改网络与加速镜像配置`;
 }
 
-// ---- 代理配置弹窗 ----
+// ---- 网络代理与加速镜像配置弹窗 ----
 function getSelectedProxyMode() {
   const checked = document.querySelector('input[name="proxy-mode"]:checked');
   return checked ? checked.value : "system";
 }
 
+function getSelectedGithubMode() {
+  const checked = document.querySelector('input[name="github-mode"]:checked');
+  return checked ? checked.value : "auto";
+}
+
+function getSelectedNpmRegistry() {
+  const checked = document.querySelector('input[name="npm-registry"]:checked');
+  return checked ? checked.value : "https://registry.npmmirror.com";
+}
+
 function syncProxyModalUi() {
-  const isCustom = getSelectedProxyMode() === "custom";
-  document.getElementById("proxy-url-wrap").style.display = isCustom ? "block" : "none";
+  const isProxyCustom = getSelectedProxyMode() === "custom";
+  document.getElementById("proxy-url-wrap").style.display = isProxyCustom ? "block" : "none";
+
+  const isGhCustom = getSelectedGithubMode() === "custom";
+  document.getElementById("github-custom-wrap").style.display = isGhCustom ? "block" : "none";
+
+  const isNpmCustom = getSelectedNpmRegistry() === "custom";
+  document.getElementById("npm-custom-wrap").style.display = isNpmCustom ? "block" : "none";
+
   document.querySelectorAll(".proxy-mode-option").forEach((opt) => {
-    const input = opt.querySelector('input[name="proxy-mode"]');
-    opt.classList.toggle("selected", input.checked);
+    const input = opt.querySelector('input[type="radio"]');
+    if (input) {
+      opt.classList.toggle("selected", input.checked);
+    }
   });
 }
 
 function openProxyModal() {
+  // 1. 代理模式
   document.querySelectorAll('input[name="proxy-mode"]').forEach((r) => {
     r.checked = r.value === state.proxyMode;
   });
   document.getElementById("proxy-url-input").value = state.proxyUrl || "";
+
+  // 2. GitHub 镜像
+  let ghMatched = false;
+  if (state.githubMode === "auto") {
+    const autoRadio = document.querySelector('input[name="github-mode"][value="auto"]');
+    if (autoRadio) { autoRadio.checked = true; ghMatched = true; }
+  } else if (state.githubMode === "direct") {
+    const directRadio = document.querySelector('input[name="github-mode"][value="direct"]');
+    if (directRadio) { directRadio.checked = true; ghMatched = true; }
+  } else {
+    document.querySelectorAll('input[name="github-mode"]').forEach((r) => {
+      if (r.value === state.githubMirror) {
+        r.checked = true;
+        ghMatched = true;
+      }
+    });
+    if (!ghMatched) {
+      const customRadio = document.querySelector('input[name="github-mode"][value="custom"]');
+      if (customRadio) customRadio.checked = true;
+      document.getElementById("github-custom-input").value = state.githubMirror || "";
+    }
+  }
+
+  // 3. npm 镜像
+  let npmMatched = false;
+  document.querySelectorAll('input[name="npm-registry"]').forEach((r) => {
+    if (r.value === state.npmRegistry) {
+      r.checked = true;
+      npmMatched = true;
+    }
+  });
+  if (!npmMatched) {
+    const customNpmRadio = document.querySelector('input[name="npm-registry"][value="custom"]');
+    if (customNpmRadio) customNpmRadio.checked = true;
+    document.getElementById("npm-custom-input").value = state.npmRegistry || "";
+  }
+
   syncProxyModalUi();
   document.getElementById("proxy-modal").classList.add("show");
   if (state.proxyMode === "custom") {
@@ -153,15 +237,56 @@ function closeProxyModal() {
 }
 
 function saveProxyConfig() {
-  const mode = getSelectedProxyMode();
-  const url = document.getElementById("proxy-url-input").value.trim();
-  if (mode === "custom" && !url) {
+  const proxyMode = getSelectedProxyMode();
+  const proxyUrl = document.getElementById("proxy-url-input").value.trim();
+  if (proxyMode === "custom" && !proxyUrl) {
     appendLog("⚠️ 请填写代理地址，格式如 127.0.0.1:7890 或 http://host:port");
     return;
   }
+
+  const ghVal = getSelectedGithubMode();
+  let githubMode = "selected";
+  let githubMirror = ghVal;
+  if (ghVal === "auto") {
+    githubMode = "auto";
+    githubMirror = "https://ghproxy.net/";
+  } else if (ghVal === "direct") {
+    githubMode = "direct";
+    githubMirror = "";
+  } else if (ghVal === "custom") {
+    githubMode = "selected";
+    githubMirror = document.getElementById("github-custom-input").value.trim();
+    if (!githubMirror) {
+      appendLog("⚠️ 请填写自定义 GitHub 加速镜像地址，如 https://ghproxy.net/");
+      return;
+    }
+    if (!githubMirror.endsWith("/")) {
+      githubMirror += "/";
+    }
+  }
+
+  const npmVal = getSelectedNpmRegistry();
+  let npmRegistry = npmVal;
+  if (npmVal === "custom") {
+    npmRegistry = document.getElementById("npm-custom-input").value.trim();
+    if (!npmRegistry) {
+      appendLog("⚠️ 请填写自定义 npm 镜像源地址，如 https://registry.npmmirror.com");
+      return;
+    }
+  }
+
   closeProxyModal();
-  postCommand("SetProxy", { mode, url: mode === "custom" ? url : null });
-  appendLog(`🌐 代理模式已更新: ${mode === "system" ? "跟随系统" : mode === "custom" ? `自定义 (${url})` : "直连"}，已持久化到本地配置。`);
+  postCommand("SetNetworkConfig", {
+    proxy_mode: proxyMode,
+    proxy_url: proxyMode === "custom" ? proxyUrl : null,
+    github_mode: githubMode,
+    github_mirror: githubMirror,
+    npm_registry: npmRegistry,
+  });
+  appendLog(`🌐 网络与镜像配置已更新并持久化: 代理(${proxyMode}) · GitHub(${githubMode === "auto" ? "自动测速" : githubMirror}) · npm(${npmRegistry})`);
+  setTimeout(() => {
+    postCommand("Refresh");
+  }, 100);
 }
 
 function appendLog(line) {
@@ -790,20 +915,46 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   // 刷新按钮
-  document.getElementById("btn-refresh").addEventListener("click", () => {
-    appendLog("正在重新检测本地环境与网络配置...");
+  const btnRefresh = document.getElementById("btn-refresh");
+  btnRefresh.addEventListener("click", () => {
+    btnRefresh.classList.add("is-spinning");
+    btnRefresh.disabled = true;
+    state.isRefreshing = true;
+    appendLog("正在重新检测本地环境、组件版本与网络配置...");
     postCommand("Refresh");
+    // 安全兜底：10 秒后如未收到响应自动恢复按钮
+    setTimeout(() => {
+      if (state.isRefreshing) {
+        state.isRefreshing = false;
+        btnRefresh.classList.remove("is-spinning");
+        btnRefresh.disabled = false;
+      }
+    }, 10000);
   });
 
-  // 代理徽章点击 -> 打开配置弹窗
+  // 代理与镜像配置弹窗
   document.getElementById("proxy-badge").addEventListener("click", openProxyModal);
-  document.querySelectorAll('input[name="proxy-mode"]').forEach((r) => {
+  document.querySelectorAll('input[name="proxy-mode"], input[name="github-mode"], input[name="npm-registry"]').forEach((r) => {
     r.addEventListener("change", syncProxyModalUi);
   });
+
   const proxyUrlInput = document.getElementById("proxy-url-input");
   proxyUrlInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") saveProxyConfig();
   });
+  const ghCustomInput = document.getElementById("github-custom-input");
+  if (ghCustomInput) {
+    ghCustomInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") saveProxyConfig();
+    });
+  }
+  const npmCustomInput = document.getElementById("npm-custom-input");
+  if (npmCustomInput) {
+    npmCustomInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") saveProxyConfig();
+    });
+  }
+
   document.getElementById("proxy-btn-cancel").addEventListener("click", closeProxyModal);
   document.getElementById("proxy-btn-save").addEventListener("click", saveProxyConfig);
   const proxyModal = document.getElementById("proxy-modal");

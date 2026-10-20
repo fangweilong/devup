@@ -2,8 +2,6 @@ use anyhow::{bail, Context, Result};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use crate::network::mirrors::NPM_MIRROR_REGISTRY;
 
 /// 构造跨平台的命令包装器：Windows 经由 cmd.exe /c（解析 npm 的 .cmd shim），
@@ -63,20 +61,26 @@ where
 pub struct NpmInstaller;
 
 impl NpmInstaller {
-    /// 执行 npm 全局包安装，自动配置国内 npmmirror 镜像源，并透传系统代理环境变量
+    /// 执行 npm 全局包安装，配置指定镜像源（默认国内 npmmirror 镜像），并透传系统代理环境变量
     pub async fn install_global<F>(
         package_name: &str,
         proxy_url: Option<&str>,
+        registry_url: &str,
         mut on_log: F,
     ) -> Result<()>
     where
         F: FnMut(String) + Send + 'static,
     {
+        let reg = if registry_url.trim().is_empty() {
+            NPM_MIRROR_REGISTRY
+        } else {
+            registry_url.trim()
+        };
         let mut cmd = wrap_command("npm");
         cmd.arg("install")
             .arg("-g")
             .arg(package_name)
-            .arg(format!("--registry={}", NPM_MIRROR_REGISTRY));
+            .arg(format!("--registry={}", reg));
 
         if let Some(proxy) = proxy_url {
             if !proxy.trim().is_empty() {
@@ -89,7 +93,7 @@ impl NpmInstaller {
         on_log(format!(
             "$ npm install -g {} --registry={}{}",
             package_name,
-            NPM_MIRROR_REGISTRY,
+            reg,
             proxy_url
                 .filter(|p| !p.trim().is_empty())
                 .map(|p| format!(" --proxy={}", p))

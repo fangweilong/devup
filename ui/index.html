@@ -183,47 +183,171 @@
     </div>
   </div>
 
-  <!-- 代理配置模态弹窗 -->
+  <!-- 网络代理与加速镜像配置模态弹窗 -->
   <div id="proxy-modal" class="modal-overlay">
-    <div class="modal-card">
-      <div class="modal-icon-wrap accent">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="2" y1="12" x2="22" y2="12"/>
-          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-        </svg>
-      </div>
-      <div class="modal-body">
-        <h3>网络代理配置</h3>
-        <p>作用于软件下载、npm 安装与 DevUp 自升级，修改后立即保存至本地配置文件，重启不丢失。</p>
-        <div class="proxy-mode-group">
-          <label class="proxy-mode-option">
-            <input type="radio" name="proxy-mode" value="system" checked />
-            <span class="proxy-mode-text">
-              <strong>跟随系统代理</strong>
-              <em>自动嗅探系统设置与环境变量</em>
-            </span>
-          </label>
-          <label class="proxy-mode-option">
-            <input type="radio" name="proxy-mode" value="custom" />
-            <span class="proxy-mode-text">
-              <strong>自定义代理地址</strong>
-              <em>固定配置，持久化保存</em>
-            </span>
-          </label>
-          <label class="proxy-mode-option">
-            <input type="radio" name="proxy-mode" value="direct" />
-            <span class="proxy-mode-text">
-              <strong>直连模式</strong>
-              <em>显式禁用任何代理</em>
-            </span>
-          </label>
+    <div class="modal-card network-modal-card">
+      <div class="modal-header-row">
+        <div class="modal-icon-wrap accent">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
         </div>
-        <div id="proxy-url-wrap" class="proxy-url-wrap" style="display: none;">
-          <input id="proxy-url-input" class="proxy-url-input" type="text" spellcheck="false"
-                 placeholder="如 127.0.0.1:7890 或 socks5://user:pass@host:1080" />
+        <div class="modal-title-wrap">
+          <h3>网络代理与加速镜像配置</h3>
+          <p>作用于软件下载、AI 工具链安装与更新检测。配置持久化保存，重启应用不丢失。</p>
         </div>
       </div>
+
+      <div class="modal-scroll-body">
+        <!-- 分组 1: 网络代理 -->
+        <div class="config-section">
+          <div class="config-section-title">
+            <span class="section-tag">代理</span> 网络代理模式
+          </div>
+          <div class="proxy-mode-group">
+            <label class="proxy-mode-option">
+              <input type="radio" name="proxy-mode" value="system" checked />
+              <span class="proxy-mode-text">
+                <strong>跟随系统代理</strong>
+                <em>自动嗅探系统代理设置与环境变量 (HTTP_PROXY / HTTPS_PROXY)</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="proxy-mode" value="custom" />
+              <span class="proxy-mode-text">
+                <strong>自定义代理地址</strong>
+                <em>手动指定固定代理 (支持 HTTP/SOCKS5)</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="proxy-mode" value="direct" />
+              <span class="proxy-mode-text">
+                <strong>直连模式</strong>
+                <em>显式禁用任何网络代理</em>
+              </span>
+            </label>
+          </div>
+          <div id="proxy-url-wrap" class="proxy-url-wrap" style="display: none;">
+            <input id="proxy-url-input" class="proxy-url-input" type="text" spellcheck="false"
+                   placeholder="如 127.0.0.1:7890 或 socks5://127.0.0.1:1080" />
+          </div>
+        </div>
+
+        <!-- 分组 2: GitHub 加速镜像 -->
+        <div class="config-section">
+          <div class="config-section-title">
+            <span class="section-tag">GitHub</span> GitHub 下载加速镜像
+          </div>
+          <p class="config-section-desc">用于 PowerShell、Git、Windows Terminal 等离线安装包及 DevUp 自更新的高速下载。</p>
+          <div class="mirror-mode-group">
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="auto" checked />
+              <span class="proxy-mode-text">
+                <strong>⚡ 自动选择最优节点 (推荐)</strong>
+                <em>并发测试各内置镜像延迟，毫秒级选取最快可用节点</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="https://ghproxy.net/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 ghproxy.net (内置节点)</strong>
+                <em>https://ghproxy.net/ —— 国内高可用主流 GitHub 文件代理</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="https://mirror.ghproxy.com/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 mirror.ghproxy.com (内置节点)</strong>
+                <em>https://mirror.ghproxy.com/ —— 边缘分布式 CDN 镜像服务</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="https://ghps.cc/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 ghps.cc (内置节点)</strong>
+                <em>https://ghps.cc/ —— 快速 GitHub Release 代理</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="https://gh.ddlc.top/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 gh.ddlc.top (内置节点)</strong>
+                <em>https://gh.ddlc.top/ —— 公益文件加速集群</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="custom" />
+              <span class="proxy-mode-text">
+                <strong>✏️ 自定义 GitHub 镜像</strong>
+                <em>输入自建或第三方 GitHub 加速前缀</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="github-mode" value="direct" />
+              <span class="proxy-mode-text">
+                <strong>🚫 直连官方 GitHub (不使用镜像)</strong>
+                <em>适合已配置全局梯子 / 海外网络环境的用户</em>
+              </span>
+            </label>
+          </div>
+          <div id="github-custom-wrap" class="proxy-url-wrap" style="display: none;">
+            <input id="github-custom-input" class="proxy-url-input" type="text" spellcheck="false"
+                   placeholder="如 https://ghproxy.net/ 或自定义镜像前缀" />
+          </div>
+        </div>
+
+        <!-- 分组 3: npm 镜像源 -->
+        <div class="config-section">
+          <div class="config-section-title">
+            <span class="section-tag">npm</span> npm 镜像源 (AI 工具链与 Node 依赖)
+          </div>
+          <p class="config-section-desc">用于 Claude Code、OpenAI Codex、OpenCode、oh-my-pi 等智能体安装与版本查询。</p>
+          <div class="mirror-mode-group">
+            <label class="proxy-mode-option">
+              <input type="radio" name="npm-registry" value="https://registry.npmmirror.com" checked />
+              <span class="proxy-mode-text">
+                <strong>⚡ 阿里 npmmirror (推荐)</strong>
+                <em>https://registry.npmmirror.com —— 国内官方推荐高速镜像，定时同步</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="npm-registry" value="https://mirrors.cloud.tencent.com/npm/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 腾讯云 npm 镜像</strong>
+                <em>https://mirrors.cloud.tencent.com/npm/ —— 腾讯公网 CDN 镜像站</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="npm-registry" value="https://repo.huaweicloud.com/repository/npm/" />
+              <span class="proxy-mode-text">
+                <strong>🌐 华为云 npm 镜像</strong>
+                <em>https://repo.huaweicloud.com/repository/npm/ —— 华为开源镜像站</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="npm-registry" value="https://registry.npmjs.org" />
+              <span class="proxy-mode-text">
+                <strong>🌐 npm 官方源 (海外)</strong>
+                <em>https://registry.npmjs.org —— 官方主源（建议配合代理使用）</em>
+              </span>
+            </label>
+            <label class="proxy-mode-option">
+              <input type="radio" name="npm-registry" value="custom" />
+              <span class="proxy-mode-text">
+                <strong>✏️ 自定义 npm 源</strong>
+                <em>输入私有 Nexus/Verdaccio 或企业源地址</em>
+              </span>
+            </label>
+          </div>
+          <div id="npm-custom-wrap" class="proxy-url-wrap" style="display: none;">
+            <input id="npm-custom-input" class="proxy-url-input" type="text" spellcheck="false"
+                   placeholder="如 https://registry.my-company.internal/" />
+          </div>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button id="proxy-btn-cancel" class="modal-btn secondary">取消</button>
         <button id="proxy-btn-save" class="modal-btn primary">保存配置</button>
