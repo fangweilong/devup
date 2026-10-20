@@ -116,17 +116,28 @@ impl NodeSource {
 }
 ```
 
+**实现定稿与上述规格的差异**（任务 B 落地后确定，后续以本节为准）：
+
+- 自由函数 `NodeSource::detect()/classify()` 而非 `impl NodeSource`（模块本身即命名空间，`detector::node_source::detect()`）；
+- `Manager` 多一个字段 `versions: Vec<String>`（语义降序），`NodeEnv` 顶层 `managed_versions` 只是「owner 命中那一个」的视图；`NodeEnv::owner_manager() -> Option<&Manager>` 取托管方本体，逐管理器渲染直接遍历 `managers`；
+- `NodeEnv` 多一个字段 `nvm_symlink_is_nodejs_dir: bool`——G1 的两个触发条件是「目录是 reparse」与「`NVM_SYMLINK` 指向该目录」，后者是独立证据（链接可能已被上一次 MSI 写成实体目录，而 nvm 配置仍指着它），不放进输出任务 D 就拿不到；
+- 采集与判定分离为 `detect()`（读 env / 目录 / rc / 子进程）与 `classify(&NodeProbeInput) -> NodeEnv`（纯函数）；
+- `pub fn path_key` / `pub fn is_within` 供任务 D 复用同一套归一化与边界规则（各写一份迟早漂移成两种结论）；
+- 护栏接口按 D3 改为 `GuardDecision::{Allow, Refuse}`，不再是不带信息的 `Result<()>`。
+
 `detect()` 的四路信号（M0 只做「是否有人在托管」，**不调用任何 manager 命令**）：
 
 1. **环境变量**：`NVM_DIR`、`NVM_SYMLINK`、`FNM_DIR`、`FNM_MULTISHELL_PATH`、`VOLTA_HOME`、`MISE_DATA_DIR`、`ASDF_DATA_DIR`、`PROTO_HOME`、`N_PREFIX`。
 2. **已知目录探测**：`~/.nvm`、`~/.fnm`、`~/Library/Application Support/fnm`、`~/.volta`、`~/.local/share/mise`、`~/.asdf`、`~/.proto`、`~/scoop/apps/nodejs`、`%APPDATA%\nvm`、`%APPDATA%\nvs`。
 3. **shell 配置只读解析**（Finder 启动时唯一能识破 nvm 的手段，`env_check.rs` 现在完全没有这条）：
    ```rust
-   /// 只读正则扫描，绝不 source / 执行用户 rc（隐私与副作用约束见设计文档 §12 R3）
+   /// 只读扫描，绝不 source / 执行用户 rc（隐私与副作用约束见设计文档 §12 R3）
    fn scan_shell_rc(home: &Path) -> Vec<Manager>
    ```
    扫描文件：`~/.zprofile`、`~/.zshrc`、`~/.bashrc`、`~/.profile`（存在才读）。
-   匹配：`export\s+NVM_DIR=`、`nvm\.sh`、`VOLTA_HOME`/`\.volta/bin`、`fnm env|fnm shell`、`mise activate`、`ASDF_DATA_DIR`、`PROTO_HOME`、`export\s+N_PREFIX=`。
+   匹配（实现用小写字符串 `contains`，**不引入 regex crate**）：`export nvm_dir=`、`nvm.sh`、`volta_home=`、`.volta/bin`、`fnm env`/`fnm shell`、`fnm_dir=`、`mise activate`、`mise_data_dir=`、`asdf_data_dir=`、`proto_home=`、`export n_prefix=`，以及实现期补强的 `zsh-nvm`。
+   三条实现期确立的规则：① 注释行跳过（`# export NVM_DIR=` 是用户主动停用，算成托管证据会凭空拦住一次正常安装）；② 取路径的片段一律以 `=` 结尾，因此 `$PROTO_HOME/bin`、`${VOLTA_HOME}` 这类「读它」的形态天然不命中；③ 不按运行平台改写 kind——被扫的是 POSIX shell 文件，出现 `nvm.sh` 的就是 Unix 版 nvm，nvm-windows 不写 rc 而靠注册表环境变量。
+   `zsh-nvm` 这条是必要的补强：本机正是 oh-my-zsh 插件形态，`NVM_DIR` 未设、`.zshrc` 里也没有 `export NVM_DIR=`，不认这个片段就会漏判 nvm。
 4. **归属判定**：
    - `active_node = which("node")` → `std::fs::canonicalize`；与任一 `manager.root` 做前缀比对 → `Manager(kind)`；落在 Homebrew Cellar → `Brew`；落在 `/usr/local/bin`（Win: `C:\Program Files\nodejs`）→ `SystemPkg`；有 node 但都不匹配 → `Unknown`；无 node → `None`。
    - Win reparse：`canonicalize(C:\Program Files\nodejs) != 自身`（归一化后比较，忽略大小写与尾分隔符）即为 reparse point；另判 `NVM_SYMLINK` 与该目录相等。零新依赖（工程目前只有 `winreg`）。
@@ -309,13 +320,15 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 4. 不动 `docs/`（文档由主 agent 更新，避免并发写冲突）。
 5. Windows 分支代码照常写，但标注为「本机未验证」，不得声称已验证。
 6. 提交由主 agent 负责，每个任务两个提交：代码提交（`feat|fix(scope): …`）+ 文档状态提交（`docs(plan): …`，把 §8 状态表填上真实提交号）。
+7. 格式化只允许 `rustfmt --edition 2024 <显式文件清单>`，且**清单里不得出现含 `mod xxx;` 声明的文件**——rustfmt 会跟随模块声明递归格式化子模块。任务 B 收尾时主 agent 把 `src/detector/mod.rs` 传了进去，导致 `env_check.rs` 被整体重排（+96/−32 纯格式化改动，无逻辑变化，已 `git checkout` 还原）。既有文件一律不动，新文件必须 rustfmt-clean。
+8. 子 agent 的 `result` / idle 摘要可能是**它上一轮的状态**（实测两次：报告「27 passed」时工作树其实编译不过）。任何验收数字都必须由主 agent 自己重跑 `cargo test` / `cargo build` / `git status` 得出，不得引用其自述。
 
 | 任务 | agent 名 | 范围（文件） | 依赖 | 完成判据 |
 |---|---|---|---|---|
 | **A** 逃生口 | `node-cfg` | `src/config.rs` | — | `NodeConfig.mode` 缺字段回退 `"auto"`；`guards_enabled()` 单测（含 `"system"`、空串、未知值） |
 | **B** 所有权探测 | `node-env` | `src/detector/node_source.rs`(新)、`src/detector/mod.rs` | — | 表驱动 owner 判定全绿；`scan_shell_rc` fixture 含 `echo PWNED` 且断言无副作用；`--ignored` 探针输出本机 `NodeEnv` |
-| **C** 指引事件通路 | `node-guide` | `src/state.rs`、`src/main.rs`、`ui/app.js`、`ui/style.css` | — | `AppEvent::Guidance` 端到端可渲染（临时手动触发入口在测试后移除）；非红色横幅 + 命令可复制；`cargo test` 全绿 |
-| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `Guidance` 且返回 `Ok(())`；**移除 `node_guards_enabled()` 上的 `#[allow(dead_code)]`** |
+| **C** 指引事件通路 | `node-guide` | `src/state.rs`、`src/main.rs`、`ui/app.js`、`ui/style.css` | — | `AppEvent::Guidance` 序列化形状有单测锁定；前端渲染为**中性/黄色横幅**（非 `InstallError` 红字）且命令可一键复制；`cargo test` 全绿。**不做临时触发入口**：本机就装着 nvm，任务 D 落地后点「更新」即是最真实的视觉验证 |
+| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `Guidance` 且返回 `Ok(())`；**移除 `node_guards_enabled()` 与 `node_source.rs` 的两处 `#[allow(dead_code)]`**；`detect()` 内含最长约 2s 的子进程等待（`npm config get prefix` / `pkgutil` / `node --version`），接入时必须确认它不跑在 UI 事件循环线程上，必要时 `spawn_blocking` |
 | **E** 显示但不代管 | `node-card` | `src/detector/env_check.rs`、`ui/app.js`、`ui/style.css` | B C | `managed_by` 落到 `SoftwareStatus`；nvm-only 机器显示「由 nvm 托管 · vX」而非「未安装」；badge 新状态 `托管中` |
 | **F** 卸载安全化 | `node-uninstall` | `src/installer/macos.rs`、`src/installer/mod.rs` | B D | 无 PKG receipt 时拒绝删除并说明；Win 卸载按 `InstallLocation` 过滤 manager 目录 |
 | **G** 回归与收口 | `node-verify` | 全量只读 + `README.md` | A–F | `cargo test` + A1b/A2/A4/A7 探针实跑记录；README 增「行为变更」小节；护栏拒绝文案复核 |
@@ -328,7 +341,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 |---|---|---|---|
 | 步 1 PATH | ✅ 已完成 | `7ffa93d` | 含计划偏差修正（补充目录插在系统兜底目录之前） |
 | A `node-cfg` | ✅ 已完成 | `4930f8f` | 17 passed / 0 warning；**遗留：`node_guards_enabled()` 上的 `#[allow(dead_code)]` 必须在任务 D 移除**（已写进 D 的完成判据） |
-| B `node-env` | ⏳ 待开 | — | M0 最大工作量 |
+| B `node-env` | ✅ 已完成 | `24c6a9c` | 27 passed / 3 ignored、build 0 warning、新文件 rustfmt-clean。**过程记录**：第一版交回时工作树编译不过（结构改动做了一半），第二版补齐但 `managers_with_versions()` 实为 `managers` 的别名，最后两项由主 agent 代为收尾；主 agent 自己误用 `rustfmt src/detector/mod.rs` 递归重排了 `env_check.rs`（已还原，教训进 §7 约束 7） |
 | C `node-guide` | ⏳ 待开 | — | |
 | D `node-guard` | ⏳ 待开 | — | |
 | E `node-card` | ⏳ 待开 | — | |
