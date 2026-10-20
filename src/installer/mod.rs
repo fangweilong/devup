@@ -92,7 +92,7 @@ fn agent_uninstall_pkgs(software_id: &str) -> Option<&'static [&'static str]> {
 /// 数组字面量（管理器数据目录）。刻意写成一行，原因见该方法注释。
 /// **Windows 分支本机未验证。**
 #[cfg(windows)]
-const NODE_UNINSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference='SilentlyContinue'; function DevupKey($p){ if([string]::IsNullOrWhiteSpace($p)){ return '' }; $s=($p -replace '[\\/]+','/').Trim(); if($s.Length -gt 1){ $s=$s.TrimEnd('/') }; return $s.ToLower() }; $managerRoots=@(__ROOTS__); $targets=@(); $owned=@(); foreach($pkg in @(Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue)){ $loc=DevupKey $pkg.InstallLocation; $hit=$false; foreach($r in $managerRoots){ $rk=DevupKey $r; if($rk -and $loc -and ($loc -eq $rk -or $loc.StartsWith($rk + '/'))){ $hit=$true; break } }; if($hit){ $owned+=('{0} [{1}]' -f $pkg.Name,$pkg.InstallLocation) } else { $targets+=$pkg } }; foreach($t in $targets){ $t | Uninstall-Package -Force -ErrorAction SilentlyContinue | Out-Null }; Write-Output ('DEVUP_RESULT targets={0} owned={1}' -f $targets.Count,$owned.Count); foreach($o in $owned){ Write-Output ('DEVUP_OWNED ' + $o) }"#;
+const NODE_UNINSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference='SilentlyContinue'; function DevupKey($p){ if([string]::IsNullOrWhiteSpace($p)){ return '' }; $s=($p -replace '[\\/]+','/').Trim(); if($s.Length -gt 1){ $s=$s.TrimEnd('/') }; return $s.ToLower() }; $managerRoots=@(__ROOTS__); $targets=@(); $owned=@(); foreach($pkg in @(Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue)){ $loc=DevupKey $pkg.InstallLocation; $hit=$false; foreach($r in $managerRoots){ $rk=DevupKey $r; if($rk -and $loc -and (([string]::Equals($loc,$rk,[System.StringComparison]::Ordinal) -or $loc.StartsWith($rk + '/',[System.StringComparison]::Ordinal)))){ $hit=$true; break } }; if($hit){ $owned+=('{0} [{1}]' -f $pkg.Name,$pkg.InstallLocation) } else { $targets+=$pkg } }; foreach($t in $targets){ $t | Uninstall-Package -Force -ErrorAction SilentlyContinue | Out-Null }; Write-Output ('DEVUP_RESULT targets={0} owned={1}' -f $targets.Count,$owned.Count); foreach($o in $owned){ Write-Output ('DEVUP_OWNED ' + $o) }"#;
 
 impl InstallerEngine {
     /// 执行具体的软件安装任务（平台分发入口）
@@ -289,6 +289,19 @@ impl InstallerEngine {
     ///
     /// 刻意的保守：`InstallLocation` 取不到（空）时按「非管理器」处理，交给 Uninstall-Package。
     /// 反过来会把裸 MSI 机器（A6 验收项）也一起拦掉，那是功能回归而非安全收益。
+    ///
+    /// **任务 F 的口径复核**（对照 mac 侧 `macos::pkg_removal_targets`，Windows 未验证）：
+    /// `DevupKey` 与 `path_key` 逐条对齐 —— 分隔符同视且连续折叠、大小写折叠（PS `ToLower`
+    /// 对 ASCII 路径与 Rust `to_lowercase` 同结果）、去尾分隔符且仅长度 >1 时去（`/` 自身
+    /// 保留）、边界必须落在 `/` 上（`-replace` + 显式 `+ '/'` 与 `is_within` 的
+    /// 「下一字节必须是 `/`」等价，`C:\Program Files\nodejs2` 不会被当成孩子）。两处刻意留着
+    /// 的差异，方向都是 PS 更保守、不会多删：① `DevupKey` 多做整串 `.Trim()`（注册表值带
+    /// 空白是真实脏数据，Rust 侧的根路径在采集期已 trim，等价）；② `rk == '/'` 的特例 Rust 有
+    /// PS 无，但盘符路径归一化后形如 `c:/...` 不以 `/` 开头，两侧同样判不命中，属不可达输入。
+    /// 已修的一处：原先用 `-eq` / `StartsWith(string)`，PowerShell 默认是 culture-sensitive
+    /// 比较（撇号、连字符在某些 culture 下按可忽略处理），会把「只差标点」的无关包判成托管方，
+    /// 全部判中时还会谎报「注册项全部指向管理器目录」；现改 `[StringComparison]::Ordinal`，
+    /// 与 Rust 的逐字节比较同口径。
     #[cfg(windows)]
     fn node_uninstall_script(managers: &[crate::detector::Manager]) -> String {
         // 注册表里没有管理器证据时传空数组：脚本照跑，只是没什么可排除的
@@ -889,22 +902,61 @@ impl InstallerEngine {
             }
 
             "nodejs" => {
-                // G5：护栏必须早于任何删除动作（现状是闭眼 `rm -rf /usr/local/bin/node`）。
+                // G5 第一层：护栏必须早于任何删除动作（现状是闭眼 `rm -rf /usr/local/bin/node`）。
                 // 渠道与下面实际走的分支同源：brew 自管移除不在 G5 射程，只有要动 /usr/local
                 // 时才要求 PKG receipt 或 owner=Brew 的证据。
                 let brew_node = MacInstaller::brew_installed_formula("node");
-                if Self::node_preflight(software_id, node_channel(brew_node), true, event_sender)
+                // env 要带下去：receipt 放行 ≠ 清单可全删（§2.5 第 2 步，候选可能是指向
+                // 管理器目录的 symlink），PKG 分支的所有权核对靠它
+                let env = match Self::node_preflight(software_id, node_channel(brew_node), true, event_sender)
                     .await
-                    .is_none()
                 {
-                    return Ok(false);
-                }
+                    None => return Ok(false),
+                    Some(env) => env,
+                };
                 if brew_node {
                     log("正在通过 Homebrew 卸载 node formula...".into());
                     MacInstaller::brew_run(&["uninstall", "node"], log.clone()).await?;
                 } else {
-                    log("正在弹出系统授权框以清理官方 PKG 安装的 Node.js 文件...".into());
-                    MacInstaller::remove_pkg_node_files("DevUp 需要管理员权限来卸载 Node.js").await?;
+                    let removal = MacInstaller::remove_pkg_node_files(
+                        &env,
+                        "DevUp 需要管理员权限来卸载 Node.js",
+                        log.clone(),
+                    )
+                    .await?;
+                    // G5 第二层：跳过项逐项呈现。用户必须能看出「少删了什么、为什么」，
+                    // 否则「卸载完成」就是个谎 —— 他以为 DevUp 清了 /usr/local，其实有一半
+                    // 是别人的东西。
+                    for p in &removal.skipped {
+                        log(format!("已跳过（所有权指向版本管理器目录，不代删）: {}", p.display()));
+                    }
+                    if !removal.executed {
+                        // 核对后一个可删项都没有：没弹系统授权框、也没删任何东西。这不是错误，
+                        // 按护栏契约出指引并 `Ok(false)` —— 发 `InstallSuccess` 会让前端把
+                        // 横幅抹掉、把「未执行」渲染成「卸载完成」（§9 台账 R1）。
+                        let skipped: Vec<String> = removal
+                            .skipped
+                            .iter()
+                            .map(|p| format!("  {}", p.display()))
+                            .collect();
+                        let ver = Detector::get_latest_version("nodejs").unwrap_or_default();
+                        send_guidance(
+                            event_sender,
+                            software_id,
+                            format!(
+                                "官方 PKG 卸载清单里的 {} 个路径经所有权核对后全部落在版本管理器自己的目录内（它们是指向托管方的链接，不是官方 PKG 装入的实体），DevUp 没有执行任何删除，也没有弹出系统授权框：\n{}",
+                                skipped.len(),
+                                skipped.join("\n")
+                            ),
+                            crate::detector::hint_commands(&env)
+                                .iter()
+                                .map(|c| crate::detector::fill_version_token(c, &ver))
+                                .collect(),
+                            Some(crate::detector::GUARD_ESCAPE_NOTE.to_string()),
+                        );
+                        return Ok(false);
+                    }
+                    log(format!("已清理 {} 项官方 PKG 落点。", removal.deleted.len()));
                 }
                 log("Node.js 卸载完成！".into());
             }
