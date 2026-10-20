@@ -382,6 +382,11 @@ fn main() -> anyhow::Result<()> {
             github_mirror: gh_mirror,
             npm_registry: npm_reg.clone(),
         }));
+        // 下发内置镜像清单：前端选项面板据此渲染，保证与后端解析逻辑同源
+        let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::MirrorOptions {
+            github: crate::network::mirrors::BUILTIN_GITHUB_MIRRORS.to_vec(),
+            npm: crate::network::mirrors::BUILTIN_NPM_MIRRORS.to_vec(),
+        }));
         let statuses = Detector::detect_all();
         let _ = proxy.send_event(UserEvent::PushToWebview(AppEvent::StatusList(statuses)));
 
