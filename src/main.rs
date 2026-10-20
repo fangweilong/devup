@@ -62,15 +62,8 @@ fn build_inlined_html() -> String {
 }
 
 fn main() -> anyhow::Result<()> {
-    // 0. 自更新启动自检：静默清理上次原地更新遗留的 .old 旧版本文件
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(name) = current_exe.file_name().map(|n| n.to_string_lossy().to_string()) {
-            let old_exe = current_exe.with_file_name(format!("{}.old", name));
-            if old_exe.exists() {
-                let _ = std::fs::remove_file(old_exe);
-            }
-        }
-    }
+    // 0. 自更新启动自检：清理上次原地更新遗留的 .old（裸二进制 / .app 目录都覆盖）
+    SelfUpdater::cleanup_update_leftovers();
 
     // 1. 初始化异步 Tokio 运行时
     let rt = Arc::new(

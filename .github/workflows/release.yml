@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.vars.outputs.tag }}
+      version: ${{ steps.vars.outputs.version }}
       should_release: ${{ steps.vars.outputs.should }}
     steps:
       - name: Checkout code
@@ -33,6 +34,7 @@ jobs:
         shell: bash
         run: |
           cargo_version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
           target_tag="v${cargo_version}"
           tag="$target_tag"
           should=false
@@ -114,14 +116,44 @@ jobs:
       - name: Build Release
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Rename Binary
-        run: cp target/${{ matrix.target }}/release/devup devup-macos-${{ matrix.label }}
+      # 产出 DevUp.app / DevUp_<ver>_<arch>.dmg（人用）/ DevUp_<ver>_<arch>.app.tar.gz（应用内自升级用）
+      # 默认 ad-hoc 签名。日后拿到 Developer ID 证书后，把下面注释里的步骤补上，
+      # 并用 --identity 传入签名身份（bundle.sh 已支持 hardened runtime + 公证钩子）。
+      - name: Package .app / .dmg
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          bash packaging/macos/bundle.sh \
+            --binary "target/${{ matrix.target }}/release/devup" \
+            --version "$VERSION" \
+            --arch "${{ matrix.label }}" \
+            --out dist
+          codesign --verify --verbose=2 dist/DevUp.app
+          ls -la dist
+
+      # ---- 换正式签名时打开（需配置 secrets）------------------------------------
+      # env 里加：APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}            # base64 的 .p12
+      #          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      # - name: Import Developer ID certificate
+      #   run: |
+      #     echo "$APPLE_CERT_P12" | base64 -d > cert.p12
+      #     create-keychain -p "" build.keychain
+      #     default-keychain -s build.keychain
+      #     unlock-keychain -p "" build.keychain
+      #     security import cert.p12 -T /usr/bin/codesign -k build.keychain \
+      #       -P "$APPLE_CERT_PASSWORD"
+      #     codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" ...
+      #   # bundle.sh 收到 --identity 后自动走 hardened runtime + entitlements.plist；
+      #   # 再追加 --notarize 并在 CI 里配好 notarytool keychain profile 即可公证。
+      # ---------------------------------------------------------------------------------
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
           name: devup-macos-${{ matrix.label }}
-          path: devup-macos-${{ matrix.label }}
+          path: dist/*
 
   release:
     needs: [version, build-windows, build-macos]
@@ -140,6 +172,6 @@ jobs:
           name: DevUp ${{ needs.version.outputs.tag_name }}
           files: |
             devup.exe
-            devup-macos-arm64
-            devup-macos-x64
+            DevUp_*.dmg
+            DevUp_*.app.tar.gz
           generate_release_notes: true
