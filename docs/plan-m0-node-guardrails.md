@@ -183,6 +183,17 @@ match NodeSource::check_install(&node_env, Channel::WindowsMsi) {
 
 `AppEvent::Guidance` 在前端渲染成**黄色/中性横幅**（带「复制命令」），不复用 `InstallError` 的红色日志样式。卸载侧同理。`mode = "system"` 跳过护栏时，日志首行打印一条警告说明本次已绕过所有权检查。
 
+**任务 C 已把通路落地**（`ba89d60`），D 只需调用，不必改 `state.rs` / `main.rs` / `ui/`：
+```rust
+crate::state::send_guidance(event_sender, target_id /* &str */, reason /* impl Into<String> */, commands /* Vec<String> */, note /* Option<String> */)
+```
+- 线上形状是 `{"type":"Guidance","data":{...}}`（`AppEvent` 无 `rename_all`），已有 `include_str!("../ui/app.js")` 的同源单测钉住，D 改字段会挂测试；
+- `note` 缺省序列化为显式 `null`，前端按空处理；`commands` 可为空数组，横幅照常渲染；
+- 前端收到 `InstallSuccess` 会 `delete state.guidance[target_id]`，所以 D 在一次**成功**安装后想留说明得走 `Log`，不要用 `Guidance`；
+- `handleGuidance` 已代管「结束本轮」的收尾（清 `activeTaskId`、`hideProgress()`、`enableAllButtons()`），D 拒绝后**只需 return `Ok(())`**，不要再自己改任务态。
+
+一处遗留 nit（不阻塞，D 顺手可改）：`ui/style.css` 横幅的边框与背景写死 `rgba(210,153,34,…)`，与 `--warning: #d29922` 同值两处；将来调色板变动，横幅不会跟着变。
+
 ### 2.5 `src/installer/macos.rs` — 卸载安全化（G5）
 
 `remove_pkg_node_files`（`macos.rs:161-164`）加两道前置：
@@ -330,7 +341,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **A** 逃生口 | `node-cfg` | `src/config.rs` | — | `NodeConfig.mode` 缺字段回退 `"auto"`；`guards_enabled()` 单测（含 `"system"`、空串、未知值） |
 | **B** 所有权探测 | `node-env` | `src/detector/node_source.rs`(新)、`src/detector/mod.rs` | — | 表驱动 owner 判定全绿；`scan_shell_rc` fixture 含 `echo PWNED` 且断言无副作用；`--ignored` 探针输出本机 `NodeEnv` |
 | **C** 指引事件通路 | `node-guide` | `src/state.rs`、`src/main.rs`、`ui/app.js`、`ui/style.css` | — | `AppEvent::Guidance` 序列化形状有单测锁定；前端渲染为**中性/黄色横幅**（非 `InstallError` 红字）且命令可一键复制；`cargo test` 全绿。**不做临时触发入口**：本机就装着 nvm，任务 D 落地后点「更新」即是最真实的视觉验证 |
-| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `Guidance` 且返回 `Ok(())`；**移除 `node_guards_enabled()` 与 `node_source.rs` 的两处 `#[allow(dead_code)]`**；`detect()` 内含最长约 2s 的子进程等待（`npm config get prefix` / `pkgutil` / `node --version`），接入时必须确认它不跑在 UI 事件循环线程上，必要时 `spawn_blocking` |
+| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `crate::state::send_guidance(...)` 且返回 `Ok(())`；**移除下列四处 `allow`**（`config.rs` 的 `node_guards_enabled`、`state.rs` 的 `Guidance` 变体与 `send_guidance`、`node_source.rs` 的模块级 `#![allow(dead_code)]`、`detector/mod.rs` 的 `#[allow(unused_imports)]`）——任务 G 的 `grep -rn "allow(dead_code)\|allow(unused_imports)" src/` 必须只剩与本流水线无关的既有项；`detect()` 内含最长约 2s 的子进程等待（`npm config get prefix` / `pkgutil` / `node --version`），接入时必须确认它不跑在 UI 事件循环线程上，必要时 `spawn_blocking` |
 | **E** 显示但不代管 | `node-card` | `src/detector/env_check.rs`、`ui/app.js`、`ui/style.css` | B C | `managed_by` 落到 `SoftwareStatus`；nvm-only 机器显示「由 nvm 托管 · vX」而非「未安装」；badge 新状态 `托管中` |
 | **F** 卸载安全化 | `node-uninstall` | `src/installer/macos.rs`、`src/installer/mod.rs` | B D | 无 PKG receipt 时拒绝删除并说明；Win 卸载按 `InstallLocation` 过滤 manager 目录 |
 | **G** 回归与收口 | `node-verify` | 全量只读 + `README.md` | A–F | `cargo test` + A1b/A2/A4/A7 探针实跑记录；README 增「行为变更」小节；护栏拒绝文案复核 |
@@ -344,7 +355,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | 步 1 PATH | ✅ 已完成 | `7ffa93d` | 含计划偏差修正（补充目录插在系统兜底目录之前） |
 | A `node-cfg` | ✅ 已完成 | `4930f8f` | 17 passed / 0 warning；**遗留：`node_guards_enabled()` 上的 `#[allow(dead_code)]` 必须在任务 D 移除**（已写进 D 的完成判据） |
 | B `node-env` | ✅ 已完成 | `24c6a9c` | 27 passed / 3 ignored、build 0 warning、新文件 rustfmt-clean。**过程记录**：第一版交回时工作树编译不过（结构改动做了一半），第二版补齐但 `managers_with_versions()` 实为 `managers` 的别名，最后两项由主 agent 代为收尾；主 agent 自己误用 `rustfmt src/detector/mod.rs` 递归重排了 `env_check.rs`（已还原，教训进 §7 约束 7） |
-| C `node-guide` | ⏳ 待开 | — | |
+| C `node-guide` | ✅ 已完成 | `ba89d60` | 30 passed / 3 ignored、build 0 warning、`node --check` 通过、381 insertions + **0 deletions**（未跑 fmt 的硬证据）、只碰清单内 3 文件。**新增两处 `allow` 已并入 D 的清理判据**；`main.rs` 零改动即接通（派发是变体无关的 serde） |
 | D `node-guard` | ⏳ 待开 | — | |
 | E `node-card` | ⏳ 待开 | — | |
 | F `node-uninstall` | ⏳ 待开 | — | |
