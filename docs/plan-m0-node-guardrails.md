@@ -3,7 +3,7 @@
 > 分支：`feat/node-manager-coexistence`
 > 上游设计：`docs/design-node-manager-coexistence.md`（§1 现状缺陷、§4 护栏 G1–G6、§10 M0）
 > 目标版本：0.3.6（patch 发布）
-> 状态：评审已定案（D1–D5 见设计文档 §13）；步 1 已完成并提交 `7ffa93d`；现按 §7 流水线串行实施 A–G
+> 状态：评审已定案（D1–D5 见设计文档 §13）；步 1 与流水线 A–G **已全部完成**（G 收口于 2026-10-20，实录见 §10）；剩余动作只有发版（0.3.6 版本号提升 + tag，见 §5）
 
 ## 1. M0 做什么
 
@@ -290,12 +290,12 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 |---|---|---|---|
 | A1 ✅ | macOS（本机：nvm + volta 共存，`~/.nvm` 有 v16/v24/v26） | `cargo test -- --ignored --nocapture dump_path_resolution` | `which(node)` = `~/.nvm/versions/node/v26.12.0/bin/node`，与用户终端 `node -v` 一致。**判别力受限，须如实记录**：本机 `/opt/homebrew/bin` 与 `/usr/local/bin` 都没有 node，所以这一条改前改后都返回 nvm，端到端区分不出差异；顺序正确性由表驱动单测 + 下面的 A1b 合成探针证明 |
 | A1b ✅ | macOS，合成 Finder 启动环境 | `env PATH="/usr/bin:/bin:/usr/sbin:/sbin" <test-bin> -- --ignored --nocapture dump_path_resolution` | 合并后为 `brew → /usr/local/bin → ~/.local/bin → ~/.npm-global/bin → /usr/bin → /bin …`：补充目录确实排在系统目录之前（brew git 不被 CLT git 遮蔽），`which(brew)` 仍命中；`which(node)` 为 `None`（GUI 认不出 nvm 是 M0 明确的非目标，由步 2 的护栏负责拒绝） |
-| A2 | macOS 同上 | 点 Node 更新（brew 未装 node 的情形） | 拒绝 + 文案，`brew list node` 仍为空 |
+| A2 ✅ | macOS 同上 | 点 Node 更新（本机以「重新安装」等价通路触发，见 R20） | **G 实录命中**：黄色 Guidance 横幅（G3/MacBrewInstall），无任何下载/写入 |
 | A3 | macOS，另有 brew node 的机器 | 点更新 | 放行 `brew upgrade node`（回归现状）。**D5：本条为发版前 checklist，不阻塞开工** |
-| A4 | macOS | 点卸载 | `pkg_receipt` 判定生效，不再盲删 |
+| A4 ✅ | macOS | 点卸载 | **G 实录命中**：G5 拒绝横幅，未弹授权框、未执行删除 |
 | A5 | Windows + nvm-windows | 点更新 | 拒绝，**`C:\Program Files\nodejs` 的 reparse 属性与 `nvm use` 行为不变**（用 `dir /AL` 前后对比） |
 | A6 | Windows，裸 MSI node | 点更新 | 放行，MSI 正常升级 |
-| A7 | 任一平台 | 从 Finder/开始菜单启动（非终端） | manager-only 用户：卡片按 D4 显示「由 nvm 托管 · vX」而非「未安装」；点击 → `Guidance` 非错误横幅 + 可复制命令 |
+| A7 ✅ | macOS（受限 PATH 模拟 launchd 环境，见 R20；真 `open DevUp.app` 待发版产物补跑） | 非终端环境启动 | **G 实录命中**：node 卡「由 nvm 托管 · v26.12.0」而非「未安装」 |
 
 **Windows 侧（A5/A6）已按评审决定标记为「待验」**：M0 先发 macOS，Windows 护栏代码照常实现与提交，但发布说明只能写「已阻断向 manager 托管目录的写入」，不能写「已在 nvm-windows 真机验证」。设计文档 §12 R8（MSI 遇 junction 的三种具体表现未实测）同样保持 open——护栏的正确性不依赖于是哪一种（一律拒写），但这条只能等 Windows 环境补测。补测清单届时单独出（含 `dir /AL` 前后对比、注册表 Node.js 项检查、`nvm use` 回归）。
 
@@ -362,7 +362,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | D `node-guard` | ✅ 已完成 | `b442fdf` | 34 passed / 4 ignored、build 0 warning、四处 allow 全清（grep 只剩 `proxy.rs` / `updater.rs` 的既有项）、接入点均在下载之前、`detect()` 走 `spawn_blocking`；`node_source.rs` 被它带回 9 处 fmt hunk，已由主 agent 单独 rustfmt 复原为 0。**7 处偏离的裁定见 §9 台账** |
 | E `node-card` | ✅ 已完成 | `33ac30e` + `e61afc8` | 39 passed / 5 ignored、build 0 warning、`node --check` OK、`detect_all()` 每轮只取证一次；A7 现场实跑复现（GUI 模拟：`managed_by=nvm`、`installed=false`，不再报「未安装」）。两处返工见 R12/R13；R9 决定不动 `main.rs`；**R14 的前端组合无自动化覆盖，是 G 的走查项** |
 | F `node-uninstall` | ✅ 已完成 | `b4ff86e` | 43 passed / 6 ignored、build 0 warning、只碰 `macos.rs` + `installer/mod.rs`（546 增 / 13 删，无格式化外溢）、`node_source.rs` 一字未动仍 0 fmt hunk。提权守卫已代码级确认：`removable.is_empty()` 早退，`run_admin_shell` 不可达。偏离裁定见 §9 R15–R18 |
-| G `node-verify` | ⏳ 待开 | — | |
+| G `node-verify` | ✅ 已完成 | `5876c57` | 全量只读复核 43 passed / 0 warning / grep·rustfmt 达标；6 探针实跑 + GUI 实点走查（G3/G5 黄色横幅、复制、A7）全部命中；README 增「行为变更（0.3.6）」；走查发现既有缺陷 **R19**（确认弹窗在 mac 显示 Windows 命令）已顺手修复。实录见 §10 |
 
 ## 9. 实现期裁定台账
 
@@ -388,6 +388,8 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **R16**（F-②③④） | `remove_pkg_node_files` 返回 `Result<PkgRemoval{deleted,skipped,executed}>`；跳过项「逐项 log，只在全部挡住时出 `Guidance`」；「正在弹出系统授权框」日志移入真会弹的分支 | **采纳** | ③是对的：删了部分又跳了部分时卸载确实成功，这时出 Guidance 反而误导；④是诚实性修正，原来那句日志无条件打会对着「其实不弹框」的轮次撒谎 |
 | **R17**（F-⑤） | 全局包预告的触发面用「`npm_prefix` 与 `lib/node_modules` 双向包含」而非字面 `== /usr/local`，且要求该目录本次确被放行 | **采纳** | 字面判据会漏掉 prefix 落在其内的形态，也会在 prefix 指向 nvm 目录时误报（全局包不住在要删的地方）；`prefix=None`（npm 不可用/超时）不触发，符合「无证据不猜」 |
 | **R18**（F-⑥） | 改了 D 的 G6 PowerShell 模板：`-eq` / `StartsWith` → `[StringComparison]::Ordinal` | **采纳，属真实缺陷修复** | PS 默认是 culture-sensitive 比较，撇号/连字符在某些 culture 下按可忽略处理，会把只差标点的无关包判成托管方，全部判中时还会谎报「注册项全部指向管理器目录」。这是「第二套归一化规则」的实例，与 §9 R13 同类。**Windows 未验证**（无环境无 pwsh，纯静态推理），列进 A5/A6 补测 |
+| **R19**（G 走查发现） | `getExecutionPlan` 的确认弹窗命令预览在 mac 上显示 **Windows 模板**（node 重装预览 `msiexec`、node 卸载预览 `powershell Get-Package`、git 预览 `Git-Installer`），与后端实际执行（`brew install node` / `installer -pkg` / CLT）完全不符 | **G 内顺手修复**（用户裁定），`5876c57` | `git diff main...HEAD` 证明是 main 既有缺陷、非 M0 回归；但 G 的「拒绝文案复核」正该覆盖「用户点确认前看到的承诺」这层——预览对破坏性动作做虚假陈述不可留。修法用文件内**已有**的 `isMac` 常量（`ui/app.js:35`）为 nodejs/git 分支 mac 文案，Windows 分支逐字不动；claudecode 卸载注释里 `%USERPROFILE%…claude.exe` 同步按平台给 `~/.local/bin/claude`。超 G「只读+README」原范围，经用户明确同意后并入 |
+| **R20**（G 走查口径） | 走查两处与原清单的字面差异：① node 按钮是「重新安装」非「升级最新」（本机 nvm 生效 26.12.0 > LTS 24.22.0，`hasUpdate=false` 的自然渲染，R12 撤回后按钮行本就不受 `isManaged` 影响）；② A7 用 `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin` 重启同一二进制模拟，未跑打包 `.app` 双击 | **接受为等效验证，如实记录** | ①两个按钮走同一个 `install_target` 护栏通路，G3 横幅照出，R14 要钉的「托管 badge + 主行动按钮并存」成立；②launchd 环境的决定性变量就是那条默认 PATH，模拟与真 Finder 启动在探测层不可区分。真机 `open DevUp.app` 仍留在待验表，发版前用打包产物补一遍即可 |
 
 > F 的一条方法论点值得留在台账里：本机 dump 显示 6 条候选**全部可删**（没有任何 `/usr/local` 路径链进 `~/.nvm`/`~/.volta`），而生产里 `pkg_receipt=false` 会让 G5 先拒绝——所以「本机跑不出跳过项」**不等于**「跳过逻辑验证过了」，跳过分支的证据只在合成 symlink 现场的表驱动单测里。它主动把这两层分开说了。
 
@@ -404,11 +406,12 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | C Guidance 通路 | `ba89d60` | `897958a` |
 | D 护栏 G1–G6 | `b442fdf` | `86404ec` |
 | E 卡片显示托管方 | `33ac30e`、`e61afc8` | `8d01736` |
-| F 卸载安全化 | `b4ff86e` | 与本节同批 |
+| F 卸载安全化 | `b4ff86e` | `0405d46`、`baeedc8` |
+| G 回归与收口（含 R19 弹窗修复） | `5876c57` | 与本节同批 |
 
 **基线数字**（F 之后）：`cargo test` = **43 passed / 6 ignored**、`cargo build` = **0 warning**、`node --check ui/app.js` 通过；`node_source.rs` 的 `rustfmt --edition 2024 --check` 必须无输出。新设备上先跑这几个确认环境一致（macOS；node 在 `~/.nvm/versions/node/v26.12.0/bin`）。
 
-### F 已完成（`b4ff86e`）——只剩 G
+### G 已完成（`5876c57`）——M0 全部任务收口，只剩发版
 下面这段是 F 的原规格，留作记录；它已全部落地，三处裁定见 §9 R15–R18。**G 需要知道的接口变化**：
 `MacInstaller::remove_pkg_node_files(&NodeEnv, &str, impl FnMut(String)) -> Result<PkgRemoval>`，`PkgRemoval { deleted, skipped, executed }`；`uninstall_target_macos("nodejs")` 对外契约不变（`Result<bool>`，`false` = 已出指引、**没弹框**、什么都没删）。`node_channel` 的 §2.2 口径问题 F 没碰，仍在原处。
 
@@ -419,27 +422,30 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 
 F 的禁区：不许真删文件、不许调用提权路径做"验证"、不碰 `ui/*` 与 `main.rs`、不许跑 `cargo fmt`/`rustfmt` 写操作（`macos.rs` 与 `installer/mod.rs` 是既有文件且含 `mod` 声明，格式化会外溢）。
 
-### G 的验收清单
-1. `cargo test` / `cargo build` / `node --check ui/app.js` 全绿（基线 39/5）；
-2. `grep -rn "allow(dead_code)\|allow(unused_imports)" src/` 只剩 `network/proxy.rs:20,63` 与 `updater.rs:3` 三条既有项（`node_source.rs` 那行 `fn version_key` 的 `pub` 是 R13 授权破例，别当越界改回去）；
-3. **GUI 实点走查**（本机就装着 nvm + volta，是最真实的现场）：
-   - 终端启动 `cargo run`：node 卡片应显示真实版本 + `install_method=nvm` + badge「托管中」**且保留「升级最新」按钮**（R14，这是设计意图，别改回去）；
-   - 点「升级最新」→ **不下载**（护栏在下载之前），出现**黄色非红色**的 `Guidance` 横幅，理由含 `~/.nvm` 路径，命令 `nvm install <latest>` 可复制（三级降级都试一遍，wry 里 `navigator.clipboard` 未必可用）；
-   - 点「卸载」→ 同样出横幅（`pkg_receipt=false`，G5 拒绝）；
-   - 从 Finder 启动（`open DevUp.app`）：node 卡片显示「由 nvm 托管 · v26.12.0」而**不是**「未安装」（D4 的落点，A7）；
-   - 其余 7 张卡片（git/pwsh/wt/homebrew/4 个 Agent）行为与改动前一致——重点看 PATH 合并顺序改动有没有影响 git 的版本与 `install_method`（R1 风险面）。
-4. README 增一节「行为变更（0.3.6）」：检测到版本管理器时 DevUp 不再安装/卸载 Node，改为终端指引；逃生口 `node.mode = "system"` 需手改 `config.json`，路径 `~/Library/Application Support/devup/config.json`（Win `%APPDATA%\devup\config.json`）。
+### G 验收实录（2026-10-20，主会话亲自重跑 + 用户手动点击；截图暂存 `/tmp/devup-walkthrough/`）
+1. **全量硬指标** ✅：`cargo test` = 43 passed / 6 ignored（原清单写「基线 39/5」是 F 之前的旧数，§10 基线段的 43/6 才是准）；`cargo build` = 0 warning；`node --check ui/app.js` 通过；`rustfmt --edition 2024 --check src/detector/node_source.rs` 无输出（注：本机 stable 工具链的 rustfmt 组件曾缺失，`rustup component add rustfmt` 后复验）。
+2. **allow 残留 grep** ✅：只剩 `proxy.rs:20,63` + `updater.rs:3` 三条既有项；`node_source.rs:394` 的 `pub fn version_key` 为 R13 授权破例，原样保留。
+3. **六探针实跑 + 文案复核** ✅：`dump_guard_decisions` 逐渠道打印本机判定——MacPkg 安装/卸载、MacBrewInstall 安装均 Refuse，WindowsMsi 双 Allow（本机 reparse/symlink 双 false，合规）；拒绝文案与 §3 模板同构（托管方 + `~/.nvm` 路径 + 当前版本 + `{ver}` 注入 24.22.0 + 逃生口 note）。
+4. **GUI 实点走查** ✅（终端启动 debug 二进制；护栏均在下发/下载**之前**拒绝，全程零下载、零提权框、零删除）：
+   - 首屏：node 卡 badge「托管中」+ `26.12.0 [nvm]` + `官方最新 v24.22.0` 照常展示；主行动按钮在场（本机因版本超前渲染为「重新安装」，等价通路，见 R20）；
+   - 「重新安装→确认重装」→ 出**黄色**「DevUp 未代为执行」横幅，命中 **G3**（brew 可用故路由 MacBrewInstall；理由含 `~/.nvm` 与版本）——即 **A2 的通过标准**（brew 未装 node + managers 非空 → 拒绝）；
+   - 复制按钮 → `pbpaste` 实测拿到 `nvm install 24.22.0`，wry 内剪贴板降级链路可用；
+   - 「卸载→确认卸载」→ G5 拒绝横幅（`没有 org.nodejs.node.pkg receipt…不代为删除`），**A4 通过**；本机 `/usr/local/bin/node` 等 6 条候选本就不存在，探针「可删」是纯函数对静态清单的归属判定（F 设计如此），未发生任何删除即无落差；
+   - **A7**：`env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin` 重启同二进制，node 卡显示「**由 nvm 托管 · v26.12.0**」而非「未安装」，按钮回落到「一键安装」（点击同样会被护栏接住）；
+   - **其余卡片对照**：Homebrew 在受限环境经补充目录解析 `7.0.10 [brew]`（merge_path 顺序在真 app 生效）；Git `2.54.0 [system]` 两环境一致（R1 风险面未命中，本机无 brew git）；Claude Code 在两实例间 `[native_cli]↔[brew]` 跳变系外部多源安装（cmux shim/pnpm/nvm/brew cask 各有一份，cask 链接 18:12 刚建）+「用户 PATH 优先」新口径的共同结果，两实例跑的是同一份探测代码，**非 M0 回归**。
+5. **发现并修复 R19**（用户裁定 G 内顺手修）：确认弹窗命令预览在 mac 显示 Windows 模板，`5876c57`。
+6. **README** ✅：增「📌 行为变更（0.3.6）」小节（含两条硬事实：拒绝发生在下载之前；逃生口 `node.mode="system"` 手改 `~/Library/Application Support/devup/config.json`，Win `%APPDATA%\devup\config.json`）；旧句「安装/卸载 Node 必弹授权框」限定到「未检测到版本管理器的机器」。
 
 ### 仍未验证（发布前 checklist，别在文档里写成已验）
 | 项 | 状态 |
 |---|---|
 | A3 装了 brew node 的 mac（`brew upgrade node` 应放行） | **待一台机器**。本机 `/opt/homebrew/bin` 与 `/usr/local/bin` 都没有 node，A1 端到端判别力受限 |
 | A5/A6 Windows nvm-windows + 裸 MSI | **待验**（按评审决定 M0 先发 macOS）。`cargo check --target x86_64-pc-windows-msvc` 卡在 `aws-lc-sys` 缺 Windows SDK，本机根本轮不到我们的 crate。F 又把 G6 模板的比较改成 `[StringComparison]::Ordinal`（R18），这条也压在 A5/A6 一起补 |
-| mac 卸载端到端 | **未验**。F 明确不跑 `run_admin_shell`（一调就弹系统授权框），所以「过滤后的脚本被授权框正确执行」与「可删集合为空时确实没弹框」都只有代码级证据（早退分支 + 表驱动单测），没有真机记录 |
+| mac 卸载端到端 | **半验**。G 走查真机确认了「G5 拒绝时确实不弹框、不落删除」（A4 点击实录）；「有 receipt 的机器上过滤后的脚本被授权框正确执行」仍未验——本机根本没有 PKG 现场，需要一台 `org.nodejs.node.pkg` 在册的机器 |
 | 跳过分支的真机证据 | 本机 6 条候选全判可删（没有 `/usr/local` 路径链进管理器目录），且 `pkg_receipt=false` 让 G5 先拒绝——**「本机跑不出跳过项」不等于「跳过逻辑验证过了」**，证据只在合成 symlink 单测里 |
 | R8 设计稿遗留：MSI 遇 junction 的三种表现 | open。护栏不依赖是哪一种（一律拒写） |
 | G3 已知代价 | 装了 brew node 却被 nvm 遮蔽的机器，`brew upgrade` 会被拒绝一次。已写进 `g3_brew_install` 的 doc，不改 |
-| 前端「托管中 + 升级最新」组合 | 无自动化覆盖（R14），只靠 G 的走查 |
+| 前端「托管中 + 主行动按钮」组合 | G 已真机走查（badge「托管中」与「重新安装」并存，点击进护栏，见 R20）；「托管中 + 升级最新」的**字面**组合要等生效版本低于 LTS 的机器才能亲眼出现，仍无自动化覆盖（R14 维持） |
 | `system` 逃生口的端到端 | 只有单元测试层，没跑过「改 config.json → 下次安装真的绕过」 |
 
 ### 协作约束（避免新会话重新踩，全文见 §7）
