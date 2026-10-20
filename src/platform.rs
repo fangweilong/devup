@@ -3,6 +3,13 @@
 //! macOS 通过 Finder/LaunchServices 启动的 GUI 进程 PATH 非常短
 //! (通常只有 /usr/bin:/bin:/usr/sbin:/sbin)，无法直接找到 brew、
 //! node、npm 等用户级命令，因此需要显式扩展搜索目录与子进程 PATH。
+//!
+//! PATH 合并规则：用户现有 PATH 的相对顺序原样保留，DevUp 的补充目录插在
+//! **系统兜底目录（/usr/bin 等）之前**。两条各治一个真实回归：
+//! - 不前置补充目录：装了 nvm/volta/fnm 的机器上，用户终端里生效的那份 node
+//!   不能被 Homebrew 压掉，否则探测结果与 `npm -g` 落点都偏离用户终端的现实；
+//! - 不无脑追加到末尾：Finder 启动时 current 就是 `/usr/bin:/bin:/usr/sbin:/sbin`，
+//!   若 brew 排到其后，装了 brew git 的用户会被 /usr/bin/git（CLT）遮蔽。
 
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -138,8 +145,53 @@ pub fn refresh_process_path() -> String {
     child_path()
 }
 
-/// 为派生子进程构造的 PATH：继承并追加常用安装目录，
-/// 保证各平台命令及 npm 全局 shim 均可被解析。
+/// Unix 系统兜底目录：登录环境自带，不代表用户主动配置的优先级
+#[cfg(unix)]
+const SYSTEM_PATH_DIRS: &[&str] = &[
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/System/Cryptexes/App/usr/bin",
+];
+
+/// 合并 Unix PATH：原样保留 current 的相对顺序，把 extras 中尚未出现的目录
+/// 插在**第一个系统兜底目录之前**；current 里没有系统兜底目录时追加到末尾。
+///
+/// 纯函数：不读写环境变量、不执行命令，便于表驱动单测（大小写敏感的精确比较）。
+/// 空分段（`::` / 首尾 `:`）会被丢弃，重复项只保留首次出现的位置。
+#[cfg(unix)]
+pub fn merge_path(current: &str, extras: &[PathBuf]) -> String {
+    let mut segs: Vec<String> = Vec::new();
+    for seg in current.split(':') {
+        if seg.is_empty() || segs.iter().any(|p| p == seg) {
+            continue;
+        }
+        segs.push(seg.to_string());
+    }
+
+    // 补充目录若一路排到系统目录之后，Finder 启动场景（current 恰好是
+    // /usr/bin:/bin:/usr/sbin:/sbin）会让 /usr/bin/git 遮蔽 brew 的 git
+    let insert_at = segs
+        .iter()
+        .position(|s| SYSTEM_PATH_DIRS.contains(&s.as_str()))
+        .unwrap_or(segs.len());
+
+    let mut offset = 0usize;
+    for extra in extras {
+        let s = extra.to_string_lossy().into_owned();
+        if s.is_empty() || segs.iter().any(|p| p == &s) {
+            continue;
+        }
+        segs.insert(insert_at + offset, s);
+        offset += 1;
+    }
+
+    segs.join(":")
+}
+
+/// 为派生子进程构造的 PATH：继承用户现有 PATH 并补齐常用安装目录，
+/// 保证各平台命令及 npm 全局 shim 均可被解析（合并顺序见 `merge_path`）。
 pub fn child_path() -> String {
     #[cfg(windows)]
     {
@@ -148,15 +200,7 @@ pub fn child_path() -> String {
     #[cfg(unix)]
     {
         let current = std::env::var("PATH").unwrap_or_default();
-        let mut parts: Vec<String> = Vec::new();
-        for extra in extra_search_dirs() {
-            let s = extra.to_string_lossy().to_string();
-            if !current.split(std::path::MAIN_SEPARATOR_STR).any(|p| p == s) {
-                parts.push(s);
-            }
-        }
-        parts.push(current);
-        let joined = parts.join(":");
+        let joined = merge_path(&current, &extra_search_dirs());
         // SAFETY: 在单进程或主事件驱动中更新当前进程的 PATH 环境变量
         unsafe {
             std::env::set_var("PATH", &joined);
@@ -165,13 +209,14 @@ pub fn child_path() -> String {
     }
 }
 
-/// 在 PATH 与补充目录中查找可执行命令（类 which），返回绝对路径
+/// 在 PATH 与补充目录中查找可执行命令（类 which），返回绝对路径。
+/// 顺序与 `child_path()` 共用 `merge_path`，因此不依赖调用方是否先刷新过进程 PATH。
 #[cfg(unix)]
 pub fn which(name: &str) -> Option<PathBuf> {
-    let bases: Vec<PathBuf> = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
-        .chain(extra_search_dirs())
-        .collect();
-    bases.iter().map(|dir| dir.join(name)).find(|p| is_executable(p))
+    let current = std::env::var("PATH").unwrap_or_default();
+    std::env::split_paths(&merge_path(&current, &extra_search_dirs()))
+        .map(|dir| dir.join(name))
+        .find(|p| is_executable(p))
 }
 
 /// Apple Silicon 输出 arm64，Intel 输出 x64（与 GitHub Release 资产命名一致）
@@ -200,5 +245,130 @@ pub fn open_url(url: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+#[cfg(all(unix, test))]
+mod tests {
+    use super::*;
+
+    fn dirs(v: &[&str]) -> Vec<PathBuf> {
+        v.iter().map(PathBuf::from).collect()
+    }
+
+    /// 回归主案：用户终端里生效的 nvm/volta node，优先级不能被 Homebrew 抢走。
+    /// 旧实现把补充目录前置，导致探测结果与 `npm -g` 落点都偏离用户终端的现实。
+    #[test]
+    fn merge_path_keeps_manager_priority_over_homebrew() {
+        let current = "/Users/x/.nvm/versions/node/v26.12.0/bin:/usr/bin:/bin";
+        let merged = merge_path(current, &dirs(&["/opt/homebrew/bin", "/usr/local/bin"]));
+
+        let segs: Vec<&str> = merged.split(':').collect();
+        let nvm = segs
+            .iter()
+            .position(|p| p.contains(".nvm"))
+            .expect("用户自身的 nvm 目录必须保留");
+        let brew = segs
+            .iter()
+            .position(|p| *p == "/opt/homebrew/bin")
+            .expect("Homebrew 目录仍需补齐，否则 GUI 启动时找不到 brew");
+        assert!(nvm < brew, "用户 PATH 必须排在补充目录之前: {merged}");
+    }
+
+    #[test]
+    fn merge_path_table() {
+        struct Case {
+            name: &'static str,
+            current: &'static str,
+            extras: &'static [&'static str],
+            want: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "空 PATH 时只用补充目录",
+                current: "",
+                extras: &["/opt/homebrew/bin", "/usr/local/bin"],
+                want: "/opt/homebrew/bin:/usr/local/bin",
+            },
+            Case {
+                name: "已存在的补充目录不重复追加，且保留首次位置",
+                current: "/opt/homebrew/bin:/usr/bin",
+                extras: &["/opt/homebrew/bin", "/usr/local/bin"],
+                want: "/opt/homebrew/bin:/usr/local/bin:/usr/bin",
+            },
+            Case {
+                name: "空分段（首尾冒号与连续冒号）被丢弃",
+                current: ":/usr/bin::/bin:",
+                extras: &[],
+                want: "/usr/bin:/bin",
+            },
+            Case {
+                name: "用户 PATH 内部重复只保留首次出现",
+                current: "/usr/bin:/usr/bin:/bin",
+                extras: &[],
+                want: "/usr/bin:/bin",
+            },
+            Case {
+                name: "大小写不同视为不同目录（精确比较，与旧实现一致）",
+                current: "/Opt/Homebrew/bin",
+                extras: &["/opt/homebrew/bin"],
+                want: "/Opt/Homebrew/bin:/opt/homebrew/bin",
+            },
+            Case {
+                name: "原样保留用户写下的相对目录",
+                current: ".:bin:/usr/bin",
+                extras: &[],
+                want: ".:bin:/usr/bin",
+            },
+            Case {
+                name: "两者皆空得到空串",
+                current: "",
+                extras: &[],
+                want: "",
+            },
+            Case {
+                // Finder/LaunchServices 启动的真实形态：补充目录一旦排到系统目录之后，
+                // /usr/bin/git（CLT）就会遮蔽 brew 的 git，卡片版本与托管方式双双误报
+                name: "GUI 启动：补充目录插在系统兜底目录之前",
+                current: "/usr/bin:/bin:/usr/sbin:/sbin",
+                extras: &["/opt/homebrew/bin", "/usr/local/bin"],
+                want: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            },
+            Case {
+                name: "用户 PATH 自身的相对顺序不被改写（系统目录之后的用户目录仍留在其后）",
+                current: "/usr/bin:/Users/x/.volta/bin",
+                extras: &["/opt/homebrew/bin"],
+                want: "/opt/homebrew/bin:/usr/bin:/Users/x/.volta/bin",
+            },
+        ];
+
+        for c in cases {
+            assert_eq!(
+                merge_path(c.current, &dirs(c.extras)),
+                c.want,
+                "用例失败: {}",
+                c.name
+            );
+        }
+    }
+
+    /// 人工核对全量 PATH 优先级与 node 解析结果：cargo test -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dump_path_resolution() {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let extras = extra_search_dirs();
+
+        println!("原始 PATH:");
+        for seg in current.split(':') {
+            println!("  {seg}");
+        }
+        println!("合并后（用户顺序保留，补充目录插在系统兜底目录之前）:");
+        for seg in merge_path(&current, &extras).split(':') {
+            println!("  {seg}");
+        }
+        println!("which(node) = {:?}", which("node"));
+        println!("which(npm)  = {:?}", which("npm"));
+        println!("which(brew) = {:?}", which("brew"));
     }
 }
