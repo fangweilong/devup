@@ -778,6 +778,12 @@ main {
   background: rgba(0, 0, 0, 0.35);
 }
 
+/* 任务 H 指引窗：命令行挂在 `pre#modal-cmd-content` 里，继承不到横幅容器
+   （.guidance-cmds 的 flex gap:5px），按同一口径补行距 */
+.modal-cmd-content .guidance-cmd-row + .guidance-cmd-row {
+  margin-top: 5px;
+}
+
 /* 全局 `* { user-select: none }` 会把文本选择一并禁掉，而「选中后手动复制」是
    剪贴板 API 与 execCommand 都失败时的最后一级降级，这里必须显式放开。 */
 .guidance-cmd {
@@ -876,6 +882,13 @@ main {
   border: 1px solid rgba(168, 85, 247, 0.35);
 }
 
+/* 任务 H 指引窗：语义与 .guidance-banner 同族——「按设计未代为执行」，取 --warning 中性黄 */
+.modal-icon-wrap.warning {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(210, 153, 34, 0.35);
+}
+
 .modal-card.action-modal-card {
   max-width: 580px;
   gap: 16px;
@@ -938,6 +951,12 @@ main {
   background: rgba(248, 81, 73, 0.15);
   border: 1px solid rgba(248, 81, 73, 0.35);
   color: #f87171;
+}
+
+.action-tag.managed {
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  color: var(--warning);
 }
 
 .modal-cmd-box {

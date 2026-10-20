@@ -718,15 +718,9 @@ impl InstallerEngine {
                             "找到的 {owned} 项 Node.js 注册项全部指向版本管理器自己的目录，DevUp 不代删：\n{}",
                             owned_items.join("\n")
                         ),
-                        crate::detector::hint_commands(&env)
-                            .iter()
-                            .map(|c| {
-                                crate::detector::fill_version_token(
-                                    c,
-                                    &Detector::get_latest_version("nodejs").unwrap_or_default(),
-                                )
-                            })
-                            .collect(),
+                        // 这是卸载现场：建议命令必须是各管理器**自己的移除**形态
+                        // （`nvm uninstall <已装版本>`），不是安装族；版本在构建时已填好
+                        crate::detector::uninstall_hint_commands(&env),
                     )
                 };
                 send_guidance(
@@ -939,7 +933,6 @@ impl InstallerEngine {
                             .iter()
                             .map(|p| format!("  {}", p.display()))
                             .collect();
-                        let ver = Detector::get_latest_version("nodejs").unwrap_or_default();
                         send_guidance(
                             event_sender,
                             software_id,
@@ -948,10 +941,8 @@ impl InstallerEngine {
                                 skipped.len(),
                                 skipped.join("\n")
                             ),
-                            crate::detector::hint_commands(&env)
-                                .iter()
-                                .map(|c| crate::detector::fill_version_token(c, &ver))
-                                .collect(),
+                            // 卸载现场 → 移除形态的命令（版本 = 托管方已装那份，构建时已填）
+                            crate::detector::uninstall_hint_commands(&env),
                             Some(crate::detector::GUARD_ESCAPE_NOTE.to_string()),
                         );
                         return Ok(false);

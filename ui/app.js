@@ -1012,6 +1012,18 @@ function getExecutionPlan(item, action) {
 function requestAction(id, action) {
   if (state.activeTaskId) return;
   const item = state.softwares.find((s) => s.id === id) || { id, name: id, installed: false };
+  // 任务 H：护栏预览会拒的动作不再弹「确认执行」窗——本轮注定拒绝，直接弹管理器指引窗
+  // （内容 = 后端下发的同源预览：安装族看 `guard_hint`，卸载看 `uninstall_hint`）。
+  // 卸载的特殊性：有 PKG receipt / brew 自管的机器**真会删**，后端那侧预览就是 None，
+  // 确认步骤原样保留——弹窗分流完全跟随判定结果，不预设「托管=卸载必拒」。
+  // 后端 preflight 仍是最终权威，本窗只是免掉一次「确认了个不会执行的动作」的空转。
+  if (id === "nodejs") {
+    const hint = action === "uninstall" ? item.uninstall_hint : item.guard_hint;
+    if (hint) {
+      showGuardHintModal(item, hint);
+      return;
+    }
+  }
   const plan = getExecutionPlan(item, action);
   state.pendingAction = { id, action, item, plan };
 
@@ -1046,6 +1058,9 @@ function requestAction(id, action) {
     copyBtn.classList.remove("copied");
     copyLabel.textContent = "复制命令";
   }
+  // 指引窗会把这两处文案换掉，普通确认窗每次打开时复位
+  const labelText = document.getElementById("modal-cmd-label-text");
+  if (labelText) labelText.textContent = "即将执行的操作指令：";
 
   if (modal) modal.classList.add("show");
 }
@@ -1055,6 +1070,90 @@ function closeConfirmModal() {
   state.pendingUninstallId = null;
   const modal = document.getElementById("confirm-modal");
   if (modal) modal.classList.remove("show");
+}
+
+// 任务 H：管理器指引窗。复用确认弹窗的 DOM 外壳，配色走 --warning 中性黄
+// （与护栏横幅 .guidance-banner 同语义：按设计未代为执行，不是错误）。
+// 文案零自造：reason / commands / note 全部来自后端 guard_hint；
+// commands 已在后端填好版本（`nvm install 24.22.0`），前端不许再拼命令模板。
+function showGuardHintModal(item, hint) {
+  const g = hint;
+  // pendingAction 保持 plan 形状给 copyModalCommands 用；action 标成 "guidance"，
+  // executePendingAction 见此只关窗、不发 IPC
+  state.pendingAction = {
+    id: item.id,
+    action: "guidance",
+    item,
+    plan: { commands: Array.isArray(g.commands) ? g.commands : [] },
+  };
+
+  const modal = document.getElementById("confirm-modal");
+  const iconWrap = document.getElementById("modal-icon-wrap");
+  const title = document.getElementById("modal-title");
+  const tag = document.getElementById("modal-action-tag");
+  const desc = document.getElementById("modal-desc");
+  const cmdContent = document.getElementById("modal-cmd-content");
+  const tipText = document.getElementById("modal-tip-text");
+  const confirmBtn = document.getElementById("modal-btn-confirm");
+  const copyBtn = document.getElementById("modal-btn-copy-cmd");
+  const copyLabel = document.getElementById("copy-btn-text");
+
+  if (iconWrap) {
+    iconWrap.className = "modal-icon-wrap warning";
+    iconWrap.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`;
+  }
+  if (title) title.textContent = "DevUp 不代为执行";
+  if (tag) {
+    tag.textContent = item.managed_by ? `由 ${item.managed_by} 托管` : "版本管理器托管";
+    tag.className = "action-tag managed";
+  }
+  // 逐字段 textContent：后端文本不能拼进 HTML（与横幅构建函数同一约束）
+  if (desc) desc.textContent = g.reason || "DevUp 未对该组件执行本次操作。";
+  if (cmdContent) {
+    // 逐条命令各带复制按钮：用户多半只照抄其中一条（install 或 use），
+    // 整块复制反而要他回终端删掉另一半。行结构与卡片横幅同源（guidance-cmd-row）
+    cmdContent.textContent = "";
+    state.pendingAction.plan.commands.forEach((cmd) => {
+      const row = document.createElement("div");
+      row.className = "guidance-cmd-row";
+      const code = document.createElement("code");
+      code.className = "guidance-cmd";
+      code.textContent = cmd;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cmd-copy-btn guidance-copy-btn";
+      btn.dataset.cmd = cmd;
+      btn.title = "复制这条命令";
+      btn.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>`;
+      const btnLabel = document.createElement("span");
+      btnLabel.className = "guidance-copy-label";
+      btnLabel.textContent = "复制";
+      btn.appendChild(btnLabel);
+      // 卡片区有 grid 级事件委托，模态框在 grid 之外——这里的按钮自持监听器，
+      // 复制逻辑仍走同一个 copyGuidanceCommand（三级降级同源）
+      btn.addEventListener("click", () => copyGuidanceCommand(btn));
+      row.appendChild(code);
+      row.appendChild(btn);
+      cmdContent.appendChild(row);
+    });
+  }
+  if (tipText) tipText.textContent = g.note || "";
+  const gLabel = document.getElementById("modal-cmd-label-text");
+  if (gLabel) gLabel.textContent = "请在你的终端执行：";
+  if (confirmBtn) {
+    confirmBtn.textContent = "知道了";
+    confirmBtn.className = "modal-btn primary";
+  }
+  if (copyBtn && copyLabel) {
+    copyBtn.classList.remove("copied");
+    // 这里的整块复制语义是「全部命令」，与逐条按钮并存；普通确认窗由 requestAction 复位为「复制命令」
+    copyLabel.textContent = "复制全部";
+  }
+
+  if (modal) modal.classList.add("show");
 }
 
 function fallbackCopy(text) {
@@ -1105,6 +1204,9 @@ function executePendingAction() {
   const pending = state.pendingAction;
   closeConfirmModal();
   if (!pending || state.activeTaskId) return;
+  // 任务 H：指引窗的「知道了」只关窗。不发 IPC——护栏在后端仍会拒，
+  // 但那趟往返只会把同一份文案再挂成卡片横幅，空转一次任务态而已
+  if (pending.action === "guidance") return;
 
   const { id, action, item } = pending;
   state.activeTaskId = id;

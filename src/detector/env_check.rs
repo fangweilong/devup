@@ -39,6 +39,18 @@ pub struct SoftwareStatus {
     /// 「本机还有哪些管理器」请遍历 `node_source::NodeEnv::managers`，那里才是唯一真相源。
     #[serde(default)]
     pub managed_versions: Vec<String>,
+    /// 任务 H：护栏此刻会拒绝「安装族」动作时，随卡片下发的指引内容
+    /// （reason / 已填版本的 commands / note），来源是 `node_source::guidance_preview`
+    /// ——与真拒绝时 `Guidance` 横幅**同一条判定函数的输出**，前端不得自造第二份。
+    /// `None` = 当前判定放行（裸装机器 / brew 可升级 / mode=system 逃生口生效），
+    /// 前端按普通确认弹窗走。
+    #[serde(default)]
+    pub guard_hint: Option<node_source::Guidance>,
+    /// 任务 H（卸载侧）：`check_uninstall` 对本机实际卸载渠道的预览。
+    /// 与安装不同，卸载**可能真放行**（mac 有 PKG receipt、或 brew 装着 node 走 brew 自管），
+    /// 所以前端只在 `Some` 时换成指引窗；`None` 时保留确认步骤，那一下是真删。
+    #[serde(default)]
+    pub uninstall_hint: Option<node_source::Guidance>,
 }
 
 pub struct Detector;
@@ -339,6 +351,32 @@ impl Detector {
         }
     }
 
+    /// 任务 H 组装：护栏若会拒掉安装族 / 卸载，把指引内容随卡片下发（`guard_hint` /
+    /// `uninstall_hint`，分别喂「安装族」与「卸载」两类动作的弹窗）。
+    ///
+    /// 预览不是新判定：`guidance_preview` 调的就是护栏的同一对 `check_install` /
+    /// `check_uninstall` + `apply_target_version`，文案与口径改动自动跟随，
+    /// 不存在「弹窗一套、横幅另一套」的漂移面。渠道由调用侧传入（与真点击时
+    /// `install_target_macos` / `uninstall_target_macos` 的路由各自同源），磁盘配置与
+    /// brew 探测这些环境动作也留在 `detect_all`，本函数保持可表驱动测试。
+    fn attach_guard_hints(
+        status: &mut SoftwareStatus,
+        env: &node_source::NodeEnv,
+        guards_enabled: bool,
+        install_channel: node_source::Channel,
+        uninstall_channel: node_source::Channel,
+    ) {
+        status.guard_hint = None;
+        status.uninstall_hint = None;
+        if !guards_enabled {
+            return;
+        }
+        // 建议版本与安装侧 `node_preflight` 同源：都取全局缓存（离线时回退内置基线）
+        let ver = Self::get_latest_version("nodejs").unwrap_or_default();
+        status.guard_hint = node_source::guidance_preview(env, install_channel, &ver, false);
+        status.uninstall_hint = node_source::guidance_preview(env, uninstall_channel, &ver, true);
+    }
+
     /// 查询指定组件已记录的最新版本（优先缓存，缺失回退内置基线）
     pub fn get_latest_version(id: &str) -> Option<String> {
         if let Ok(guard) = VERSION_CACHE.lock() {
@@ -558,9 +596,11 @@ impl Detector {
             latest_version: Self::get_latest_version(id),
             install_method: method,
             default_channel: default_channel.into(),
-            // 托管展示字段只有 nodejs 卡片会有值，由 apply_node_ownership 覆盖
+            // 托管展示字段只有 nodejs 卡片会有值，由 apply_node_ownership / attach_guard_hint 覆盖
             managed_by: None,
             managed_versions: Vec::new(),
+            guard_hint: None,
+            uninstall_hint: None,
         }
     }
 
@@ -575,6 +615,9 @@ impl Detector {
         // 而同步函数无论把活儿丢给谁，最终都要把调用线程等到结果出来为止；调用侧的线程
         // 归属结论见 main.rs 与任务 E 的报告（启动首轮在 UI 主线程，Refresh 在 tokio worker）。
         let node_env = node_source::detect();
+        // 任务 H 的预览口径开关：mode=system 时护栏整体让位，弹窗也必须回到普通确认样式，
+        // 否则前端会拦住一个后端其实会放行的动作。磁盘读一次几 KB，与取证同一量级。
+        let node_guards_enabled = crate::config::AppConfig::load().node_guards_enabled();
 
         let mut list = Vec::new();
 
@@ -595,6 +638,8 @@ impl Detector {
                 default_channel: "WinGet / 微软官方MSIXBundle".into(),
                 managed_by: None,
                 managed_versions: Vec::new(),
+                guard_hint: None,
+                uninstall_hint: None,
             });
 
             list.push(Self::probe_software(
@@ -619,6 +664,14 @@ impl Detector {
                 "阿里npmmirror镜像官方MSI",
             );
             Self::apply_node_ownership(&mut node_card, &node_env);
+            // Win 的安装与卸载都是 MSI 渠道（`node_channel` 的 cfg!(windows) 分支）
+            Self::attach_guard_hints(
+                &mut node_card,
+                &node_env,
+                node_guards_enabled,
+                node_source::node_channel(false),
+                node_source::node_channel(false),
+            );
             list.push(node_card);
 
             list.push(Self::probe_software(
@@ -657,6 +710,20 @@ impl Detector {
                 "Homebrew / 阿里npmmirror官方PKG",
             );
             Self::apply_node_ownership(&mut node_card, &node_env);
+            // 两个渠道与真点击时的路由各自同源：安装看 `brew_available()`（which，无进程），
+            // 卸载看 `brew_installed_formula("node")`（`uninstall_target_macos` 用的就是它）。
+            // brew 子进程只在护栏开启且 brew 在场时跑一次；关着就不为预览花钱。
+            let brew_present = crate::platform::which("brew").is_some();
+            let brew_route_uninstall = node_guards_enabled
+                && brew_present
+                && crate::installer::macos::MacInstaller::brew_installed_formula("node");
+            Self::attach_guard_hints(
+                &mut node_card,
+                &node_env,
+                node_guards_enabled,
+                node_source::node_channel(brew_present),
+                node_source::node_channel(brew_route_uninstall),
+            );
             list.push(node_card);
 
             list.push(Self::probe_software(
@@ -867,6 +934,83 @@ mod tests {
         }
     }
 
+    /// 任务 H：`mode=system` 让位时两个预览必须一起撤回（跨平台成立——开关优先于渠道，
+    /// 开着时哪个渠道被拒随平台而异，内容断言在下方 mac 专项用例里钉）
+    #[test]
+    fn attach_guard_hints_respects_escape_switch() {
+        let env = node_source::NodeEnv {
+            owner: node_source::NodeOwner::Manager(node_source::ManagerKind::Nvm),
+            managers: vec![mgr(node_source::ManagerKind::Nvm, "/Users/u/.nvm", &["26.12.0"])],
+            ..Default::default()
+        };
+        let mut s = status("nodejs", true, Some("nvm"), Some("nvm"), &["26.12.0"]);
+        Detector::attach_guard_hints(
+            &mut s,
+            &env,
+            false,
+            node_source::node_channel(false),
+            node_source::node_channel(false),
+        );
+        assert_eq!(s.guard_hint, None, "逃生口开着还出预览 = 前端拦下后端会放行的动作");
+        assert_eq!(s.uninstall_hint, None, "卸载侧同理");
+    }
+
+    /// 任务 H 的 mac 侧内容断言（安装 + 卸载两个预览）。渠道不写死结论：
+    /// `node_channel(false)` 在 mac 即 MacPkg——nvm 在场必拒（G4）、无 receipt 的卸载必拒（G5）；
+    /// Windows 主机同环境走 WindowsMsi（无 reparse 证据 → 都放行，按 D2 不误拦），故整条用例锁 mac。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn attach_guard_hints_macos_carries_manager_guidance() {
+        let env = node_source::NodeEnv {
+            owner: node_source::NodeOwner::Manager(node_source::ManagerKind::Nvm),
+            managers: vec![mgr(node_source::ManagerKind::Nvm, "/Users/u/.nvm", &["26.12.0"])],
+            version: Some("26.12.0".into()),
+            ..Default::default()
+        };
+        let mut s = status("nodejs", true, Some("nvm"), Some("nvm"), &["26.12.0"]);
+        Detector::attach_guard_hints(
+            &mut s,
+            &env,
+            true,
+            node_source::node_channel(false),
+            node_source::node_channel(false),
+        );
+        let g = s.guard_hint.expect("mac 上 nvm 托管机器应给出安装指引预览");
+        assert!(g.reason.contains("nvm") && g.reason.contains("/Users/u/.nvm"));
+        assert!(
+            g.commands.iter().any(|c| c.starts_with("nvm install")),
+            "命令形态必须来自 guard_commands: {:?}",
+            g.commands
+        );
+        assert!(g.note.is_some());
+        let u = s.uninstall_hint.expect("无 receipt 的托管机器卸载也该是指引而非确认");
+        assert!(u.reason.contains("receipt"), "卸载预览要讲清 G5 依据: {}", u.reason);
+        assert!(
+            u.commands.iter().any(|c| c.starts_with("nvm uninstall")),
+            "卸载预览的命令必须是移除形态: {:?}",
+            u.commands
+        );
+
+        // 有 receipt 的机器：卸载真会执行 → `uninstall_hint` 必须留 None（确认窗保留）
+        let mut s2 = status("nodejs", true, Some("nvm"), Some("nvm"), &["26.12.0"]);
+        let receipt_env = node_source::NodeEnv {
+            pkg_receipt: true,
+            ..env.clone()
+        };
+        Detector::attach_guard_hints(
+            &mut s2,
+            &receipt_env,
+            true,
+            node_source::node_channel(false),
+            node_source::node_channel(false),
+        );
+        assert_eq!(
+            s2.uninstall_hint, None,
+            "卸载放行时不得伪装成指引——那是真删，确认步骤是用户唯一防线"
+        );
+        assert!(s2.guard_hint.is_some(), "receipt 不改变安装侧 G4 拒绝");
+    }
+
     /// 线上一行 JSON 的形状：新增两字段必须蛇形命名、排在 default_channel 之后，
     /// `managed_by` 为 None 时序列化成显式 null（不是字段消失），前端据此判空。
     /// 手法与任务 C 的 Guidance 快照同源：拿真实序列化结果钉死，而不是比对结构体。
@@ -891,22 +1035,31 @@ mod tests {
             default_channel: "c".into(),
             managed_by: managed_by.map(str::to_string),
             managed_versions: managed_versions.iter().map(|v| v.to_string()).collect(),
+            guard_hint: None,
+            uninstall_hint: None,
         }
     }
 
+    /// 任务 H 之后 `guard_hint` 进入线上形状：托管卡片必须能带出嵌套对象
+    /// （reason/commands/note 三个蛇形键），这条快照同时钉住前端读法。
     #[test]
     fn test_managed_fields_json_snapshot() {
-        let status = status(
+        let mut status = status(
             "nodejs",
             false,
             Some("nvm"),
             Some("nvm"),
             &["26.12.0", "24.22.0", "16.20.2"],
         );
+        status.guard_hint = Some(node_source::Guidance {
+            reason: "当前 Node.js 由 nvm（/Users/u/.nvm）托管。".into(),
+            commands: vec!["nvm install 24.22.0".into()],
+            note: None,
+        });
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(
             json,
-            r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d","repo_url":"https://nodejs.org","installed":false,"version":null,"latest_version":"v24.21.0","install_method":"nvm","default_channel":"c","managed_by":"nvm","managed_versions":["26.12.0","24.22.0","16.20.2"]}"#
+            r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d","repo_url":"https://nodejs.org","installed":false,"version":null,"latest_version":"v24.21.0","install_method":"nvm","default_channel":"c","managed_by":"nvm","managed_versions":["26.12.0","24.22.0","16.20.2"],"guard_hint":{"reason":"当前 Node.js 由 nvm（/Users/u/.nvm）托管。","commands":["nvm install 24.22.0"],"note":null},"uninstall_hint":null}"#
         );
     }
 
@@ -916,7 +1069,7 @@ mod tests {
         let status = status("git", true, Some("brew"), None, &[]);
         let json = serde_json::to_string(&status).unwrap();
         assert!(
-            json.ends_with(r#""managed_by":null,"managed_versions":[]}"#),
+            json.ends_with(r#""managed_by":null,"managed_versions":[],"guard_hint":null,"uninstall_hint":null}"#),
             "实际: {json}"
         );
     }

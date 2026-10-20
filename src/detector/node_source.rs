@@ -18,6 +18,7 @@
 //! 判定不吃配置、不读环境、不起进程，输入只有 `&NodeEnv` + `Channel`；呈现方式（`Guidance`
 //! 事件）与 `node.mode` 逃生口都在调用侧，见 `installer/mod.rs` 的 `node_preflight()`。
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -239,6 +240,43 @@ impl ManagerKind {
             // 给一条确实存在的通用命令好过编一个可能拼错的形态。**Windows 未验证。**
             ManagerKind::Scoop => &["scoop install nodejs-lts"],
             ManagerKind::Nvs => &["nvs add lts"],
+        }
+    }
+
+    /// 该 kind 的**移除**命令（卸载拒绝横幅用；`{ver}` = 托管方已装的版本，
+    /// 由 `uninstall_hint_commands` 构建时就填好，不走 `apply_target_version`——
+    /// 那个令牌填的是「DevUp 本来要装的版本」，卸载指引指向没装的版本是反向的）。
+    /// 与 `guard_commands` 同一条纪律：只写确有其事的形态；nvs 的移除别名语法没把握，
+    /// 给只读的 `nvs ls` 让用户自己定位，不编 `nvs rm <alias>`。**Windows 形态未实机验证。**
+    fn guard_uninstall_commands(self) -> &'static [&'static str] {
+        match self {
+            ManagerKind::Nvm => &["nvm uninstall {ver}"],
+            ManagerKind::NvmWindows => &["nvm uninstall {ver}"],
+            ManagerKind::Fnm => &["fnm uninstall {ver}"],
+            ManagerKind::Volta => &["volta uninstall node"],
+            ManagerKind::Mise => &["mise uninstall node@{ver}"],
+            ManagerKind::Asdf => &["asdf uninstall nodejs {ver}"],
+            ManagerKind::Proto => &["proto remove node {ver}"],
+            ManagerKind::N => &["n rm {ver}"],
+            ManagerKind::Scoop => &["scoop uninstall nodejs-lts"],
+            ManagerKind::Nvs => &["nvs ls"],
+        }
+    }
+
+    /// 版本化的移除命令没有版本可填时的**只读**退化（列出装了哪些版本，让用户自己挑）。
+    /// 宁可只给查看命令，也不给 `nvm uninstall`（无参数）这种会直接报错的半成品。
+    fn uninstall_probe_command(self) -> &'static str {
+        match self {
+            ManagerKind::Nvm => "nvm ls",
+            ManagerKind::NvmWindows => "nvm list",
+            ManagerKind::Fnm => "fnm list",
+            ManagerKind::Volta => "volta list node",
+            ManagerKind::Mise => "mise ls node",
+            ManagerKind::Asdf => "asdf list nodejs",
+            ManagerKind::Proto => "proto list",
+            ManagerKind::N => "n ls",
+            ManagerKind::Scoop => "scoop list",
+            ManagerKind::Nvs => "nvs ls",
         }
     }
 
@@ -557,12 +595,23 @@ fn custodians(env: &NodeEnv) -> Vec<&Manager> {
     }
 }
 
+/// 组装 `Refuse`（安装族）：建议命令走 `hint_commands`（`{ver}` = DevUp 本来要装的那版）。
+fn refuse(env: &NodeEnv, why: &str) -> GuardDecision {
+    refuse_with(env, why, hint_commands(env))
+}
+
+/// 组装 `Refuse`（卸载族，G5/G6）：建议命令走 `uninstall_hint_commands`。
+/// 卸载的拒绝若照抄安装族命令，就是在「别删」的现场教用户「装一个他没装的版本」——方向整个相反。
+fn refuse_uninstall(env: &NodeEnv, why: &str) -> GuardDecision {
+    refuse_with(env, why, uninstall_hint_commands(env))
+}
+
 /// 组装 `Refuse`：第一段说「谁托管、在哪」，第二段说「DevUp 为什么不动它」，
 /// `commands` 给托管方自己的命令，`note` 给逃生口。
 ///
 /// 托管方的 root 路径**必须**出现在 reason 里：只说「由 nvm 托管」是空话，用户无法自证；
 /// 带上 `~/.nvm` 他才能立刻看出「哦，它读到的是我那个目录」。
-fn refuse(env: &NodeEnv, why: &str) -> GuardDecision {
+fn refuse_with(env: &NodeEnv, why: &str, commands: Vec<String>) -> GuardDecision {
     let cs = custodians(env);
     let owner_kind = match env.owner {
         NodeOwner::Manager(k) => Some(k),
@@ -608,7 +657,7 @@ fn refuse(env: &NodeEnv, why: &str) -> GuardDecision {
 
     GuardDecision::Refuse {
         reason: format!("{head}\n{why}"),
-        commands: hint_commands(env),
+        commands,
         note: Some(GUARD_ESCAPE_NOTE.to_string()),
     }
 }
@@ -642,6 +691,55 @@ pub fn hint_commands(env: &NodeEnv) -> Vec<String> {
     if commands.is_empty() {
         // 认不出托管方时给一条**只读**的定位命令，让用户自己看一眼这份 node 从哪来：
         // 比留一片空白有用，也不算编造安装语法。
+        #[cfg(windows)]
+        commands.push(r#"dir /AL "C:\Program Files\nodejs""#.to_string());
+        #[cfg(not(windows))]
+        commands.push("ls -l /usr/local/bin/node".to_string());
+    }
+    commands
+}
+
+/// 卸载拒绝横幅的建议命令（`hint_commands` 的卸载侧对孪生，G5/G6 与 mac 卸载全跳过的
+/// 脚本侧指引都用它）。
+///
+/// 与安装侧的两处本质差别，都在这条函数里兑现：
+/// 1. 命令形态换成**移除**（`nvm uninstall` 而不是 `nvm install`）——「DevUp 不删」的
+///    现场给安装建议，等于没听懂用户要干什么；
+/// 2. `{ver}` 填的是**该托管方自己已装的版本**（owner 命中时优先 `env.version`，
+///    否则它 `versions` 的第一个；`versions` 已按语义降序），构建时就地填掉——
+///    DevUp 的目标版本在这里毫无意义，而且真机上卸载拒绝走的横幅路径不该再等
+///    `apply_target_version` 补一次只有安装侧正确的版本。
+/// 版本一条都拿不到时退化为只读 list 命令（见 `uninstall_probe_command`）。
+pub fn uninstall_hint_commands(env: &NodeEnv) -> Vec<String> {
+    let mut commands: Vec<String> = Vec::new();
+    let mut seen: Vec<ManagerKind> = Vec::new();
+    let owner_kind = match env.owner {
+        NodeOwner::Manager(k) => Some(k),
+        _ => None,
+    };
+    for m in &custodians(env) {
+        if seen.contains(&m.kind) {
+            continue;
+        }
+        seen.push(m.kind);
+        let ver: Option<&String> = if Some(m.kind) == owner_kind {
+            env.version.as_ref().or(m.versions.first())
+        } else {
+            m.versions.first()
+        };
+        for tmpl in m.kind.guard_uninstall_commands() {
+            if tmpl.contains(GUARD_VERSION_TOKEN) {
+                match ver {
+                    Some(v) => commands.push(tmpl.replace(GUARD_VERSION_TOKEN, target_version(v))),
+                    None => commands.push(m.kind.uninstall_probe_command().to_string()),
+                }
+            } else {
+                commands.push((*tmpl).to_string());
+            }
+        }
+    }
+    if commands.is_empty() {
+        // 无托管方（如 mac 裸装但 receipt 缺失）：与安装侧同款只读定位命令
         #[cfg(windows)]
         commands.push(r#"dir /AL "C:\Program Files\nodejs""#.to_string());
         #[cfg(not(windows))]
@@ -720,7 +818,7 @@ fn g5_mac_pkg_uninstall(env: &NodeEnv) -> GuardDecision {
     if env.pkg_receipt || env.owner == NodeOwner::Brew {
         return GuardDecision::Allow;
     }
-    refuse(
+    refuse_uninstall(
         env,
         "没有 org.nodejs.node.pkg receipt，说明 /usr/local 那份 node 不是官方 PKG 装入的（可能是 n、源码编译或 Homebrew 链接），DevUp 不代为删除。",
     )
@@ -739,7 +837,7 @@ fn g6_windows_uninstall(env: &NodeEnv) -> GuardDecision {
     {
         return GuardDecision::Allow;
     }
-    refuse(
+    refuse_uninstall(
         env,
         "Node.js 的系统注册项指向版本管理器自己的目录，卸载它等于删掉托管方的 runtime，DevUp 不代删。",
     )
@@ -790,6 +888,47 @@ pub fn apply_target_version(decision: GuardDecision, ver: &str) -> GuardDecision
                 .collect(),
             note,
         },
+    }
+}
+
+/// 卡片级指引预览（任务 H）：托管机器在**点确认之前**就能看到的指引内容，
+/// 字段与 `GuardDecision::Refuse` 一致、可直接序列化成 `SoftwareStatus.guard_hint`。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Guidance {
+    pub reason: String,
+    pub commands: Vec<String>,
+    pub note: Option<String>,
+}
+
+/// 给前端弹窗用的「这台机器现在会不会被护栏拒绝」预览（`uninstall` 选择查安装侧还是
+/// 卸载侧那对函数，渠道也要按对应动作的真实路由传进来）。
+///
+/// **不许在这条路径之外另写一份文案**：预览走 `check_install` / `check_uninstall` +
+/// `apply_target_version` 原样取结果，护栏改口径时弹窗横幅自动跟着变。返回 `None` =
+/// 此刻判定是放行，前端按普通确认弹窗走（真点击后仍会经过 `node_preflight` 的实时判定，
+/// 预览不是豁免）。
+pub fn guidance_preview(
+    env: &NodeEnv,
+    ch: Channel,
+    target_ver: &str,
+    uninstall: bool,
+) -> Option<Guidance> {
+    let decision = if uninstall {
+        check_uninstall(env, ch)
+    } else {
+        check_install(env, ch)
+    };
+    match apply_target_version(decision, target_ver) {
+        GuardDecision::Refuse {
+            reason,
+            commands,
+            note,
+        } => Some(Guidance {
+            reason,
+            commands,
+            note,
+        }),
+        GuardDecision::Allow => None,
     }
 }
 
@@ -2456,6 +2595,123 @@ mod tests {
             apply_target_version(GuardDecision::Allow, "v24.22.0"),
             GuardDecision::Allow
         );
+    }
+
+    /// 任务 H 的弹窗预览 = 拒绝横幅的同一条输出（同源钉死，防「弹窗一套、横幅另一套」）
+    #[test]
+    fn guidance_preview_is_the_same_output_as_refusal() {
+        let env = NodeEnv {
+            owner: NodeOwner::Manager(ManagerKind::Nvm),
+            managers: vec![mgrv(ManagerKind::Nvm, "/Users/u/.nvm", &["v26.12.0"])],
+            version: Some("26.12.0".into()),
+            ..Default::default()
+        };
+        let got = guidance_preview(&env, Channel::MacPkg, "v24.22.0", false)
+            .expect("nvm 托管机器的 MacPkg 必拒，预览必须给出");
+        assert!(
+            got.reason.contains("nvm"),
+            "理由要点名托管方: {}",
+            got.reason
+        );
+        assert!(
+            got.reason.contains("/Users/u/.nvm"),
+            "理由必须带路径证据（与横幅同一硬要求）"
+        );
+        assert_eq!(
+            got.commands,
+            vec![
+                "nvm install 24.22.0".to_string(),
+                "nvm use 24.22.0".to_string()
+            ],
+            "预览命令必须已填版本、与横幅逐字一致"
+        );
+        assert!(got.note.is_some(), "预览必须带逃生口提示");
+
+        // 放行路径没有预览：前端保持普通确认弹窗（裸装机器不该看到「不代为执行」）
+        let bare = NodeEnv {
+            owner: NodeOwner::SystemPkg,
+            pkg_receipt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            guidance_preview(&bare, Channel::MacPkg, "v24.22.0", false),
+            None
+        );
+
+        // 卸载侧走 `check_uninstall`：无 receipt 的 mac 机必拒（G5），有 receipt 就放行（预览退出）
+        let g5 = guidance_preview(&env, Channel::MacPkg, "v24.22.0", true)
+            .expect("nvm 托管 + 无 receipt：卸载预览必须拒绝");
+        assert!(
+            g5.reason.contains("receipt"),
+            "卸载拒绝要讲清 G5 依据: {}",
+            g5.reason
+        );
+        assert_eq!(
+            g5.commands,
+            vec!["nvm uninstall 26.12.0".to_string()],
+            "卸载指引必须是移除形态 + 已装版本——装命令或目标版本都是语义反转（用户走查点破）"
+        );
+        let with_receipt = NodeEnv {
+            owner: NodeOwner::SystemPkg,
+            pkg_receipt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            guidance_preview(&with_receipt, Channel::MacPkg, "v24.22.0", true),
+            None,
+            "有 receipt 的卸载放行——确认步骤必须留给真会删的动作"
+        );
+    }
+
+    /// 卸载侧建议命令的三条纪律：每个 kind 都有命令、不留 `{ver}` 残留、
+    /// **绝不混入安装族命令**（G 走查后用户点破的语义反转）；无版本可填时退化成只读 list。
+    #[test]
+    fn uninstall_hint_commands_never_install() {
+        let kinds = [
+            ManagerKind::Nvm,
+            ManagerKind::NvmWindows,
+            ManagerKind::Fnm,
+            ManagerKind::Volta,
+            ManagerKind::Mise,
+            ManagerKind::Asdf,
+            ManagerKind::Proto,
+            ManagerKind::N,
+            ManagerKind::Scoop,
+            ManagerKind::Nvs,
+        ];
+        for kind in kinds {
+            let env = NodeEnv {
+                owner: NodeOwner::Manager(kind),
+                managers: vec![mgrv(kind, "/Users/u/mgr-root", &["22.14.0"])],
+                version: Some("22.14.0".into()),
+                ..Default::default()
+            };
+            let got = uninstall_hint_commands(&env);
+            assert!(!got.is_empty(), "{kind:?} 卸载指引不能为空");
+            for c in &got {
+                assert!(!c.contains(GUARD_VERSION_TOKEN), "{kind:?} 残留令牌: {c}");
+                assert!(
+                    !c.starts_with("nvm install") && !c.contains(" install "),
+                    "{kind:?} 卸载指引混入安装命令: {c}"
+                );
+            }
+            // 版本一条都没有：退化成只读 list，而不是无参数的半成品命令
+            let env0 = NodeEnv {
+                owner: NodeOwner::Manager(kind),
+                managers: vec![mgrv(kind, "/Users/u/mgr-root", &[])],
+                ..Default::default()
+            };
+            for c in uninstall_hint_commands(&env0) {
+                assert!(
+                    !c.contains(GUARD_VERSION_TOKEN),
+                    "{kind:?} 无版本仍残留令牌: {c}"
+                );
+                assert!(
+                    !c.ends_with("uninstall") && !c.ends_with(" remove") && !c.ends_with(" rm"),
+                    "{kind:?} 无版本时不得给缺参数的移除命令: {c}"
+                );
+            }
+        }
     }
 
     /// 每个 ManagerKind 都必须给得出至少一条命令：拒绝横幅不能是空的
