@@ -126,7 +126,10 @@ pub fn refresh_process_path() -> String {
     }
 
     let joined = parts.join(";");
-    std::env::set_var("PATH", &joined);
+    // SAFETY: 在单进程或主事件驱动中更新当前进程的 PATH 环境变量
+    unsafe {
+        std::env::set_var("PATH", &joined);
+    }
     joined
 }
 
@@ -154,7 +157,10 @@ pub fn child_path() -> String {
         }
         parts.push(current);
         let joined = parts.join(":");
-        let _ = std::env::set_var("PATH", &joined);
+        // SAFETY: 在单进程或主事件驱动中更新当前进程的 PATH 环境变量
+        unsafe {
+            std::env::set_var("PATH", &joined);
+        }
         joined
     }
 }

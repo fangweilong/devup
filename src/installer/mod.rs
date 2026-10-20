@@ -9,8 +9,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::detector::Detector;
 use crate::network::downloader::{create_http_client, download_file};
-#[cfg(windows)]
-use crate::network::mirrors::find_fastest_github_url;
 use crate::network::mirrors::NODEJS_MIRROR_BASE;
 use crate::state::AppEvent;
 

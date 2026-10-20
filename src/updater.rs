@@ -4,7 +4,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::network::downloader::{create_http_client, download_file};
-use crate::network::mirrors::find_fastest_github_url;
 use crate::state::AppEvent;
 
 pub const GITHUB_REPO: &str = "fangweilong/devup";
