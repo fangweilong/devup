@@ -2,7 +2,7 @@
 
 专为国内开发者打造的 **Windows / macOS 现代化开发环境与 AI Coding Agent 一键装配/管理工具**。
 
-采用 **Rust + 系统原生 WebView**（Windows 使用 WebView2，macOS 使用 WKWebView）构建，输出仅约 10MB 的单个绿色免安装可执行程序（`devup.exe` / `devup`），无需敲终端命令、无需配置复杂的环境变量，弹出现代化暗黑卡片操作界面，一键解决网络阻断与多依赖装配难题。
+采用 **Rust + 系统原生 WebView**（Windows 使用 WebView2，macOS 使用 WKWebView）构建，产物只有几 MB 且零运行时依赖：Windows 输出单个免安装 `devup.exe`，macOS 输出标准 `DevUp.app`（发布为 DMG 安装镜像，拖进 Applications 即可，与其他 Mac 软件一致）。无需敲终端命令、无需配置复杂的环境变量，弹出现代化暗黑卡片操作界面，一键解决网络阻断与多依赖装配难题。
 
 ---
 
@@ -55,6 +55,8 @@ devup/
 │   ├── installer/             # 平台安装器：Windows MSI/AppX/WinGet、macOS Homebrew/PKG 提权、npm 国内源自动安装
 │   ├── network/               # 系统代理自动嗅探、多源镜像并发测速、流式带速下载器
 │   └── state.rs               # IPC 协议与事件定义
+├── packaging/
+│   └── macos/                 # macOS 打包层：Info.plist 模板、AppIcon.icns、bundle.sh（.app/.dmg/.tar.gz）
 ├── ui/                        # 原生内嵌前端（零构建依赖，直接 include_str! 编译进单一可执行文件）
 │   ├── index.html             # 现代化暗黑仪表盘
 │   ├── style.css              # 霓虹发光、磨砂圆角、进度条动画
@@ -72,13 +74,13 @@ devup/
 
 1. **一键手动触发**：
    - 提交代码到 GitHub -> 点击仓库页面 **Actions** -> 选择 **Build & Release** 工作流 -> 点击 **Run workflow**。
-   - `windows-latest` 与 `macos-14`（arm64 / x64 双架构矩阵）并行编译，Artifacts 中分别输出 `devup.exe`、`devup-macos-arm64`、`devup-macos-x64`。
+   - `windows-latest` 与 `macos-14`（arm64 / x64 双架构矩阵）并行编译，Artifacts 输出 `devup.exe` 与 `DevUp_<版本>_<arch>.dmg`（人用的安装镜像）、`DevUp_<版本>_<arch>.app.tar.gz`（应用内「检查更新」的整包）。
 2. **Git Tag 自动发布 Release**：
    ```bash
    git tag v0.1.0
    git push origin v0.1.0
    ```
-   GitHub Actions 检测到 `v*` tag 后，会自动编译并将三个平台的产物统一挂载到 GitHub Releases 下载页面；应用内的「检查更新」会按当前平台与 CPU 架构自动匹配对应资产完成原地自升级。
+   GitHub Actions 检测到 `v*` tag 后，会自动编译并将各平台产物统一挂载到 GitHub Releases 下载页面；应用内的「检查更新」会按当前平台与 CPU 架构匹配资产完成原地自升级——macOS 整包换掉 `DevUp.app`（图标、Info.plist 与二进制一起更新），Windows 原子替换 `devup.exe`。
 3. **PR / 功能分支**：推送 `feat/**` 分支或发起 PR 时仅执行全平台编译验证，不发布 Release。
 
 ---
@@ -96,8 +98,12 @@ cargo build --release
 
 # macOS 交叉构建 Intel 版本（在 Apple Silicon 上）
 cargo build --release --target x86_64-apple-darwin
+
+# 打成标准 macOS 应用：DevUp.app + DMG + 自升级归档（ad-hoc 签名）
+bash packaging/macos/bundle.sh \
+  --binary target/release/devup --version 0.1.1 --arch arm64 --out dist
 ```
 
-编译产物位于 `target/release/devup.exe`（Windows）或 `target/release/devup`（macOS）。
+编译产物位于 `target/release/devup.exe`（Windows）；macOS 的 `cargo build` 只产出裸二进制，需要再过一遍 `packaging/macos/bundle.sh` 才得到可双击的 `dist/DevUp.app`。改图标时执行 `bash packaging/macos/gen-icon.sh`（源文件 `packaging/macos/icon.svg`）。
 
-> macOS 使用提示：直接双击裸二进制可能被 Gatekeeper 拦截，可在终端运行，或在「系统设置 → 隐私与安全性」中允许；安装 Node.js / 卸载 PKG 版 Node 时会弹出系统原生授权框。
+> macOS 安装提示：发行包目前是 **ad-hoc 签名**（无付费开发者证书、未公证），首次打开会被 Gatekeeper 拦下——在 Finder 里 **按住 Control 点击 DevUp.app → 打开 → 打开** 放行一次即可，之后正常双击；若提示「已损坏」，执行 `xattr -dr com.apple.quarantine ~/Applications/DevUp.app`。建议把应用放到 `~/Applications`：应用内「检查更新」是整包替换 `DevUp.app`，装在 `/Applications` 下没有管理员权限时会失败并提示改用 DMG 重装。安装 Node.js / 卸载 PKG 版 Node 时会弹出系统原生授权框。

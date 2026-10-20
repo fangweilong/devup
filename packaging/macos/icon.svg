@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <!--
+    DevUp macOS 应用图标（Apple 图标网格：1024 画布，实体 824x824 居中，四周留 100pt 安全边距）。
+    图形来自 ui/logo.svg（32 单位网格），此处按 824/30 等比放大，描边与圆角比例保持一致。
+  -->
+  <defs>
+    <linearGradient id="devup-brand-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(72.533 72.533) scale(27.46667)">
+    <rect x="1" y="1" width="30" height="30" rx="7" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+    <g transform="translate(4, 4)">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="
+        M 4.5 3.5
+        C 3.95 3.5 3.5 3.95 3.5 4.5
+        L 3.5 19.5
+        C 3.5 20.05 3.95 20.5 4.5 20.5
+        L 12.5 20.5
+        C 17.5 20.5 21 16.8 21 12
+        C 21 7.2 17.5 3.5 12.5 3.5
+        Z
+        M 12 6.2
+        L 16.8 11
+        L 14 11
+        L 14 17.8
+        L 10 17.8
+        L 10 11
+        L 7.2 11
+        Z
+      " fill="url(#devup-brand-grad)"/>
+    </g>
+  </g>
+</svg>
