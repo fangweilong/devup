@@ -13,13 +13,10 @@
 //!    `classify()` 是纯函数，全部依赖注入。没有这层拆分，表驱动单测就会依赖本机环境，
 //!    并且并行运行的测试会互相抢环境变量。
 //!
-//! 遗留项：本 crate 是二进制 crate，`detect()` 还没有调用方（由任务 D 接入），rustc 因此
-//! 把整棵调用树连类型带常量判为 dead code。用下面这一条模块级 `allow` 一次性兜住，而不是
-//! 在几十个条目上逐个加注。**任务 D 接上 `detect()` 后必须删除本行 `#![allow(dead_code)]`**，
-//! 否则以后真正死掉的代码会被它永久掩盖（任务 G 的验收包含
-//! `grep -rn "allow(dead_code)" src/detector/` 必须为空这一条）。
-//! `src/detector/mod.rs` 里那条 `#[allow(unused_imports)]` 同源同期清理。
-#![allow(dead_code)]
+//! 判定层（任务 D）就在本模块：`check_install()` / `check_uninstall()` 是护栏的纯函数，
+//! 与采集层共用同一套 `path_key` / `is_within` 归一化规则，避免「探测说托管、护栏说没有」。
+//! 判定不吃配置、不读环境、不起进程，输入只有 `&NodeEnv` + `Channel`；呈现方式（`Guidance`
+//! 事件）与 `node.mode` 逃生口都在调用侧，见 `installer/mod.rs` 的 `node_preflight()`。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -204,6 +201,47 @@ impl ManagerKind {
         }
     }
 
+    /// 面向用户的名字：拒绝文案要指名道姓地说「谁在托管」，`Nvm` 打成 `nvm-windows`
+    /// 才有意义（两者的命令形态与提权要求都不同）。大小写按各项目的官方写法。
+    pub fn label(self) -> &'static str {
+        match self {
+            ManagerKind::Nvm => "nvm",
+            ManagerKind::NvmWindows => "nvm-windows",
+            ManagerKind::Fnm => "fnm",
+            ManagerKind::Volta => "Volta",
+            ManagerKind::Mise => "mise",
+            ManagerKind::Asdf => "asdf",
+            ManagerKind::Proto => "proto",
+            ManagerKind::N => "n",
+            ManagerKind::Scoop => "Scoop",
+            ManagerKind::Nvs => "nvs",
+        }
+    }
+
+    /// 该 kind 的建议命令（护栏拒绝时用；含 `{ver}` 的由 `apply_target_version` 填版本）。
+    ///
+    /// 只写**确有其事**的命令形态：拿不准版本参数的 kind（Scoop / nvs）给一条不指定版本的
+    /// 通用命令，宁可不给细节，也不编造语法。nvm-windows 的 `nvm use` 会改 reparse point、
+    /// 可能要求提权，但那是用户在自己终端里的决定，DevUp 只是不代做。
+    /// **Windows 形态未实机验证。**
+    fn guard_commands(self) -> &'static [&'static str] {
+        match self {
+            ManagerKind::Nvm => &["nvm install {ver}", "nvm use {ver}"],
+            ManagerKind::NvmWindows => &["nvm install {ver}", "nvm use {ver}"],
+            ManagerKind::Fnm => &["fnm install {ver}", "fnm default {ver}"],
+            ManagerKind::Volta => &["volta install node@{ver}"],
+            ManagerKind::Mise => &["mise install node@{ver}", "mise set -g node@{ver}"],
+            ManagerKind::Asdf => &["asdf plugin add nodejs", "asdf install nodejs {ver}"],
+            ManagerKind::Proto => &["proto install node {ver}"],
+            // n 的用法就是 `n <版本>`（装完即切当前版本），`n install` 不是它的形态
+            ManagerKind::N => &["n {ver}"],
+            // 以下两条刻意不带 `{ver}`：这两个项目指定版本的语法我们没把握，
+            // 给一条确实存在的通用命令好过编一个可能拼错的形态。**Windows 未验证。**
+            ManagerKind::Scoop => &["scoop install nodejs-lts"],
+            ManagerKind::Nvs => &["nvs add lts"],
+        }
+    }
+
     /// 该 kind 存放「已安装版本」的目录（版本名取自目录名）。
     ///
     /// `Proto` / `Nvs` 的目录布局没有把握，返回 `None` 表示本阶段不收集它们的版本，
@@ -322,6 +360,11 @@ pub fn is_within(cand_key: &str, root_key: &str) -> bool {
 
 /// 两段路径是否指向同一位置（归一化后相等）。reparse 判定的纯逻辑部分：
 /// 「canonicalize 的结果与自身不相等」即说明这条路径是链接而不是实体。
+///
+/// 唯一的非测试调用方 `read_windows_nodejs_facts()` 是 `#[cfg(windows)]`，所以这条也用 cfg
+/// 门控（`test` 分支下的表驱动单测在 mac 上同样跑这套归一化）。不用压制警告的属性兜住
+/// 整块——那会把以后真正死掉的比较逻辑一起藏住。
+#[cfg(any(windows, test))]
 fn same_path(a: &str, b: &str) -> bool {
     path_key(a) == path_key(b)
 }
@@ -447,6 +490,310 @@ fn pick_managed_versions(owner: NodeOwner, managers: &[Manager]) -> Vec<String> 
 }
 
 // ---------------------------------------------------------------------------
+// 护栏判定（纯函数：不吃配置、不读环境、不起进程，输入只有 &NodeEnv + Channel）
+// ---------------------------------------------------------------------------
+
+/// 本次写入/删除走的渠道。判定必须按渠道分派：同一个「装了 nvm」的现场，
+/// `brew upgrade node` 是正常升级，`brew install node`（凭空多出一份并行 runtime）却要拦。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// Windows 官方 MSI，落点 `C:\Program Files\nodejs`
+    WindowsMsi,
+    /// macOS 官方 PKG，落点 `/usr/local`
+    MacPkg,
+    /// macOS Homebrew 渠道（brew install / upgrade / uninstall node）
+    MacBrewInstall,
+}
+
+/// 本平台 nodejs 写入/删除会走的渠道。`route_is_brew` 是调用方对「这次动的是 brew 还是系统
+/// 包」的判断（macOS：安装看 `brew_available()`、卸载看 `brew_installed_formula("node")`）；
+/// Windows 只有 MSI 一条路，该参数被忽略。
+///
+/// 用 `cfg!` 而不是 `#[cfg]`，两个理由：①「这次往哪写」的判断只该有一处，四个接入点各自
+/// `#[cfg]` 迟早分叉；②`Channel::WindowsMsi` 因此在两个平台都有构造点——否则 mac 构建会把
+/// 它判成 dead code，而本流水线明令不许再用 `allow` 压这种警告。
+pub fn node_channel(route_is_brew: bool) -> Channel {
+    if cfg!(windows) {
+        Channel::WindowsMsi
+    } else if route_is_brew {
+        Channel::MacBrewInstall
+    } else {
+        Channel::MacPkg
+    }
+}
+
+/// 护栏结论。`Refuse` 带的是「为什么没做 + 该怎么做」，不是错误码（设计文档 D3）：
+/// 调用方把它转成 `AppEvent::Guidance` 非错误横幅，而不是 `InstallError` 红字。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GuardDecision {
+    Allow,
+    Refuse {
+        reason: String,
+        commands: Vec<String>,
+        note: Option<String>,
+    },
+}
+
+/// 命令模板里的版本占位符，由 `apply_target_version()` 替换。
+///
+/// 为什么不让判定函数自己去拿版本：`Detector::get_latest_version()` 读的是全局缓存，
+/// 纯函数一吃它，表驱动单测就跟着线上状态漂移；而把 `24.22.0` 写进源码是另一种错法
+/// （LTS 会变）。所以版本由调用侧取、在这里以令牌形式传递。
+pub const GUARD_VERSION_TOKEN: &str = "{ver}";
+
+/// 逃生口提示（D1：M0 不给这个开关做 UI，只能手改配置文件）。
+/// 护栏误判的代价是「少一次自动安装」，而绕过它的入口必须写得出、可回退。
+///
+/// 公开：G6 的脚本侧指引（installer 里拼）也要说同一句话，两处各写一份迟早改成两种说法。
+pub const GUARD_ESCAPE_NOTE: &str = "确需 DevUp 接管系统安装，请在 config.json 把 node.mode 设为 \"system\"，该模式会跳过全部 Node 所有权检查。";
+
+/// 托管方清单：owner 命中某个管理器时**只说那一个**（本机 nvm + volta 共存，把 volta 也写成
+/// 「托管方」就是把不相干的东西算成责任方）；其余 owner（`None` / `Unknown` / `Brew` /
+/// `SystemPkg`）把扫到的管理器都列出来——G3/G4 的真实现场正是「生效的不是他的，但他确实在用」。
+fn custodians(env: &NodeEnv) -> Vec<&Manager> {
+    match env.owner_manager() {
+        Some(m) => vec![m],
+        None => env.managers.iter().collect(),
+    }
+}
+
+/// 组装 `Refuse`：第一段说「谁托管、在哪」，第二段说「DevUp 为什么不动它」，
+/// `commands` 给托管方自己的命令，`note` 给逃生口。
+///
+/// 托管方的 root 路径**必须**出现在 reason 里：只说「由 nvm 托管」是空话，用户无法自证；
+/// 带上 `~/.nvm` 他才能立刻看出「哦，它读到的是我那个目录」。
+fn refuse(env: &NodeEnv, why: &str) -> GuardDecision {
+    let cs = custodians(env);
+    let owner_kind = match env.owner {
+        NodeOwner::Manager(k) => Some(k),
+        _ => None,
+    };
+
+    let head = if cs.is_empty() {
+        // 一点管理器证据都没有（只认出 reparse，或 /usr/local 那份不是 PKG 装的）：
+        // 老实说「归属认不出」，而不是编一个托管方
+        match env.active_node.as_ref() {
+            Some(p) => format!(
+                "DevUp 认不出这份 Node.js 的归属，也没有官方安装的凭证：{}。",
+                p.display()
+            ),
+            None => "DevUp 没能确认这份 Node.js 的归属，无法保证这次写入不会踩到别人的东西。"
+                .to_string(),
+        }
+    } else {
+        let parts: Vec<String> = cs
+            .iter()
+            .map(|m| {
+                let mut s = format!("{}（{}", m.kind.label(), m.root.display());
+                // 版本只给「生效那份归的那个」补：列别人的版本会把用户引向错误的托管方
+                if Some(m.kind) == owner_kind {
+                    if let Some(v) = env.version.as_deref() {
+                        s.push_str(&format!("，当前 v{v}"));
+                    } else if let Some(v) = m.versions.first() {
+                        s.push_str(&format!("，已装 v{v}"));
+                    }
+                }
+                s.push('）');
+                s
+            })
+            .collect();
+        let joined = parts.join("、");
+        if owner_kind.is_some() {
+            // 拉丁名前留一个空格（中文排版），但全角 `）` 后不再加——「（… ） 托管」太松垮
+            format!("当前 Node.js 由 {joined}托管。")
+        } else {
+            format!("这台机器上装着版本管理器 {joined}。")
+        }
+    };
+
+    GuardDecision::Refuse {
+        reason: format!("{head}\n{why}"),
+        commands: hint_commands(env),
+        note: Some(GUARD_ESCAPE_NOTE.to_string()),
+    }
+}
+
+/// 归一化目标版本：去掉前导 `v`（`nvm install vv24` 不存在）
+fn target_version(ver: &str) -> &str {
+    ver.trim().trim_start_matches(['v', 'V'])
+}
+
+/// 单条命令的 `{ver}` 令牌替换。G6 的脚本侧指引走这里，保证命令形态与 `refuse()` 同源。
+pub fn fill_version_token(command: &str, ver: &str) -> String {
+    command.replace(GUARD_VERSION_TOKEN, target_version(ver))
+}
+
+/// 拒绝横幅的建议命令：逐托管方、按 kind 去重（nvm 与 nvm-windows 是两个 kind，命令形态
+/// 各自列），`{ver}` 令牌保留给 `apply_target_version`。
+///
+/// 公开是因为 G6 有一条「跑到脚本才发现全部注册项都在管理器目录里」的现场：那不在
+/// `check_*` 的静态判据内，调用方要自己拼指引，但命令形态必须与这里同源，否则两处迟早
+/// 一边是 `nvm install`、一边是 `nvm i`。
+pub fn hint_commands(env: &NodeEnv) -> Vec<String> {
+    let mut commands: Vec<String> = Vec::new();
+    let mut seen: Vec<ManagerKind> = Vec::new();
+    for m in &custodians(env) {
+        if seen.contains(&m.kind) {
+            continue;
+        }
+        seen.push(m.kind);
+        commands.extend(m.kind.guard_commands().iter().map(|c| c.to_string()));
+    }
+    if commands.is_empty() {
+        // 认不出托管方时给一条**只读**的定位命令，让用户自己看一眼这份 node 从哪来：
+        // 比留一片空白有用，也不算编造安装语法。
+        #[cfg(windows)]
+        commands.push(r#"dir /AL "C:\Program Files\nodejs""#.to_string());
+        #[cfg(not(windows))]
+        commands.push("ls -l /usr/local/bin/node".to_string());
+    }
+    commands
+}
+
+/// MSI / PKG 的系统落点是否落在某个管理器数据目录之内（G1 的第三条证据，也是 G6 的静态部分）。
+///
+/// 归一化与边界规则复用采集层的 `path_key` / `is_within`：判定与探测各写一份迟早漂移成
+/// 两种结论（`/usr/local2` 与 `/usr/local` 那种同前缀陷阱就属于会漂移的地方）。
+fn system_dir_owned_by_manager(env: &NodeEnv) -> bool {
+    env.managers
+        .iter()
+        .any(|m| is_within(WIN_NODEJS_DIR_KEY, &path_key(&m.root.to_string_lossy())))
+}
+
+/// G1：不向已被版本管理器接管的 `C:\Program Files\nodejs` 执行 MSI。
+///
+/// 三条证据任一命中即拒：目录是 reparse point（MSI 会写穿链接）、`NVM_SYMLINK` 正好指着它
+/// （链接已被上一次 MSI 写成实体目录、nvm 配置却还认它）、或该目录落在某个 `manager.root` 内。
+fn g1_windows_msi(env: &NodeEnv) -> GuardDecision {
+    if !env.nodejs_dir_is_reparse
+        && !env.nvm_symlink_is_nodejs_dir
+        && !system_dir_owned_by_manager(env)
+    {
+        return GuardDecision::Allow;
+    }
+    refuse(
+        env,
+        "C:\\Program Files\\nodejs 当前由版本管理器接管（是指向别处的链接），MSI 会写穿这份链接、毁掉 `nvm use` 的版本语义，所以 DevUp 不向这里写入。",
+    )
+}
+
+/// G3：检测到版本管理器时不执行 `brew install node`。
+///
+/// **简化的代价（必须写明）**：判据用的是 `owner != Brew`，而不是「brew 到底装没装 node」——
+/// 后者要靠 `brew list` 子进程取证，M0 不为护栏新增进程（`detect()` 已经背着 2s 上限了）。
+/// 于是这个现场会被误拦：用户确实装了 brew node，但日常被 nvm 遮蔽（owner = Manager），
+/// 一次本可放行的 `brew upgrade` 会被拒绝。选择宁可拒绝，也不在「检测到管理器」的时候
+/// 推动一份并行 runtime——放错的代价（PATH 里多出一份 node 抢解释）比多拦一次的代价大。
+fn g3_brew_install(env: &NodeEnv) -> GuardDecision {
+    if env.managers.is_empty() || env.owner == NodeOwner::Brew {
+        return GuardDecision::Allow;
+    }
+    refuse(
+        env,
+        "Homebrew 这条路径会往 brew 的目录新装一份 Node，与版本管理器各说各话；DevUp 不新增这份并行 runtime，也不去抢 PATH。",
+    )
+}
+
+/// G4：有管理器时不执行官方 PKG。两条判据分别是「凭空多一份」与「落点已被占」：
+///
+/// - `managers` 非空：PKG 只认 `/usr/local`，对 nvm / fnm / volta / mise 用户是新插一份
+///   并行 runtime；对 `n` 更糟——`n` 的当前版本就在 `/usr/local`，PKG 直接覆盖它。
+/// - `owner = SystemPkg` 且无 receipt：`/usr/local/bin/node` 确实在，但不是 PKG 装的
+///   （源码编译、手动解压、`n` 留下的实体），DevUp 没资格替它做升级决定。
+fn g4_mac_pkg(env: &NodeEnv) -> GuardDecision {
+    let occupied_by_other = env.owner == NodeOwner::SystemPkg && !env.pkg_receipt;
+    if env.managers.is_empty() && !occupied_by_other {
+        return GuardDecision::Allow;
+    }
+    refuse(
+        env,
+        "官方 PKG 的安装位置固定在 /usr/local：要么凭空多出一份并行 runtime 抢 PATH，要么覆盖版本管理器当前指向的那一份，所以 DevUp 不执行 PKG 安装。",
+    )
+}
+
+/// G5：macOS 卸载 PKG 前必须确认 receipt 存在（现状是闭眼 `rm -rf /usr/local/bin/node`）。
+///
+/// 没有 receipt 就说明那份 node 不是官方 PKG 装入的（`n`、源码编译、brew 链接都可能是），
+/// 删掉它用户不会立刻察觉，而这是不可逆的——所以 `owner = Unknown` 在这里也算拦的理由
+/// （D2：Unknown 只参与卸载侧的保守判定）。
+fn g5_mac_pkg_uninstall(env: &NodeEnv) -> GuardDecision {
+    if env.pkg_receipt || env.owner == NodeOwner::Brew {
+        return GuardDecision::Allow;
+    }
+    refuse(
+        env,
+        "没有 org.nodejs.node.pkg receipt，说明 /usr/local 那份 node 不是官方 PKG 装入的（可能是 n、源码编译或 Homebrew 链接），DevUp 不代为删除。",
+    )
+}
+
+/// G6：Windows 卸载。
+///
+/// 精确判据是「`Get-Package` 的 `InstallLocation` 落在任一 `manager.root` 内」，而那需要跑
+/// PowerShell 才知道——那部分过滤在 `installer::uninstall_target_windows` 的脚本里做，并按
+/// 「一个都没命中」出指引。这里只负责静态可判的现场：系统目录本身已被 manager 接管，
+/// 命中就不必再去跑卸载脚本。**Windows 分支本机未验证。**
+fn g6_windows_uninstall(env: &NodeEnv) -> GuardDecision {
+    if !env.nodejs_dir_is_reparse
+        && !env.nvm_symlink_is_nodejs_dir
+        && !system_dir_owned_by_manager(env)
+    {
+        return GuardDecision::Allow;
+    }
+    refuse(
+        env,
+        "Node.js 的系统注册项指向版本管理器自己的目录，卸载它等于删掉托管方的 runtime，DevUp 不代删。",
+    )
+}
+
+/// 安装侧护栏（G1 / G3 / G4）。
+///
+/// **D2：`owner = Unknown` 本身不是触发条件**——安装可逆（大不了再装一次），误拦的代价
+/// 看得见也绕得开；三条规则各自的条件里都不检查 Unknown。Unknown 只在调用侧日志留一行痕
+/// （`installer::node_preflight`）。注意这与 G1 不矛盾：MSI 那条看的是 reparse / NVM_SYMLINK /
+/// 目录归属这些**直接证据**，它们成立时即便 owner 被判成 Unknown 也照样该拦。
+pub fn check_install(env: &NodeEnv, ch: Channel) -> GuardDecision {
+    match ch {
+        Channel::WindowsMsi => g1_windows_msi(env),
+        Channel::MacBrewInstall => g3_brew_install(env),
+        Channel::MacPkg => g4_mac_pkg(env),
+    }
+}
+
+/// 卸载侧护栏（G5 / G6）。比安装保守：删错不可逆，且用户不会立刻发现自己少了什么。
+pub fn check_uninstall(env: &NodeEnv, ch: Channel) -> GuardDecision {
+    match ch {
+        Channel::WindowsMsi => g6_windows_uninstall(env),
+        // brew 自管移除（`brew uninstall node`）删的是 brew 自己记账的目录，
+        // 不在 G5「盲 rm /usr/local」的射程内
+        Channel::MacBrewInstall => GuardDecision::Allow,
+        Channel::MacPkg => g5_mac_pkg_uninstall(env),
+    }
+}
+
+/// 把命令里的 `{ver}` 换成实际目标版本（前导 `v` 会被去掉，`nvm install vv24` 不存在）。
+///
+/// 版本由调用侧从 `Detector::get_latest_version("nodejs")` 取：护栏建议的版本必须与 DevUp
+/// 本来要装的那一个一致，否则「建议命令」就成了猜。`reason` 不含该令牌（它讲的是归属，
+/// 归属里没有「目标版本」这件事）。
+pub fn apply_target_version(decision: GuardDecision, ver: &str) -> GuardDecision {
+    match decision {
+        GuardDecision::Allow => GuardDecision::Allow,
+        GuardDecision::Refuse {
+            reason,
+            commands,
+            note,
+        } => GuardDecision::Refuse {
+            reason,
+            commands: commands
+                .into_iter()
+                .map(|c| fill_version_token(&c, ver))
+                .collect(),
+            note,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 采集：环境变量 / 已知目录 / shell rc
 // ---------------------------------------------------------------------------
 
@@ -568,8 +915,15 @@ fn common_known_dirs(home: &Path) -> Vec<(ManagerKind, PathBuf)> {
 
 /// nvm-windows / nvs 的数据目录在 `%APPDATA%` 下（home 即 `%USERPROFILE%`）；
 /// 这些路径在 mac 上没有意义，因此不进通用表。**Windows 分支本机未验证。**
-#[cfg(windows)]
+///
+/// 任务 B 原本把这张表整个 `#[cfg(windows)]` 掉。这里改成「跨平台构造、运行时按平台决定是否
+/// 参与探测」，因为整段 cfg 掉会让 `ManagerKind::Nvs` 在 mac 构建里没有任何构造点，rustc 就报
+/// dead code —— 而本流水线不许用 `allow` 压这类警告（探测语义没有任何变化：非 Windows 依旧
+/// 返回空表，只是多构造两个随即丢弃的 PathBuf）。
 fn platform_known_dirs(home: &Path) -> Vec<(ManagerKind, PathBuf)> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
     vec![
         (
             ManagerKind::NvmWindows,
@@ -580,11 +934,6 @@ fn platform_known_dirs(home: &Path) -> Vec<(ManagerKind, PathBuf)> {
             home.join("AppData").join("Roaming").join("nvs"),
         ),
     ]
-}
-
-#[cfg(not(windows))]
-fn platform_known_dirs(_home: &Path) -> Vec<(ManagerKind, PathBuf)> {
-    Vec::new()
 }
 
 /// rc 匹配表：`(片段, kind, 是否从同一行取路径)`。
@@ -1731,6 +2080,479 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// 护栏判定表：G1/G3/G4/G5/G6 各一条放行 + 一条拒绝，外加 D2 的保守口径。
+    /// 全部用合成的 `NodeEnv`（不碰真机、不起进程），Windows 那几行走的是同一套
+    /// `path_key` 字符串逻辑，所以在 macOS 上也能验。
+    #[test]
+    fn guard_decision_table() {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Act {
+            Install,
+            Uninstall,
+        }
+
+        fn nvm() -> Manager {
+            mgrv(ManagerKind::Nvm, "/Users/u/.nvm", &["v26.12.0", "v24.22.0"])
+        }
+        fn nvm_windows() -> Manager {
+            mgrv(
+                ManagerKind::NvmWindows,
+                "C:\\Users\\u\\AppData\\Roaming\\nvm",
+                &["v24.22.0"],
+            )
+        }
+
+        struct Case {
+            name: &'static str,
+            act: Act,
+            ch: Channel,
+            env: NodeEnv,
+            want_allow: bool,
+            /// 拒绝时 reason 必须自证：托管方的 root 路径要出现在文案里
+            want_root: Option<&'static str>,
+            /// 拒绝时 commands 里必须有的子串（用于盯住「落点被非 PKG 占据」那类无托管方的现场）
+            want_cmd: Option<&'static str>,
+        }
+
+        let cases = [
+            // ---- G1 Win MSI 安装 ----
+            Case {
+                name: "G1 放行：裸 MSI 机器（实体目录、无管理器证据）",
+                act: Act::Install,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    owner: NodeOwner::SystemPkg,
+                    active_node: Some(PathBuf::from("C:\\Program Files\\nodejs\\node.exe")),
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G1 拒绝：Program Files\\nodejs 是 nvm-windows 的 junction",
+                act: Act::Install,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    owner: NodeOwner::Manager(ManagerKind::NvmWindows),
+                    managers: vec![nvm_windows()],
+                    active_node: Some(PathBuf::from(
+                        "C:\\Users\\u\\AppData\\Roaming\\nvm\\v24.22.0\\node.exe",
+                    )),
+                    version: Some("24.22.0".into()),
+                    nodejs_dir_is_reparse: true,
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("C:\\Users\\u\\AppData\\Roaming\\nvm"),
+                want_cmd: Some("nvm install"),
+            },
+            Case {
+                name: "G1 拒绝：链接已被上次 MSI 写成实体，但 NVM_SYMLINK 仍指着它",
+                act: Act::Install,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    managers: vec![nvm_windows()],
+                    nvm_symlink_is_nodejs_dir: true,
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("AppData"),
+                want_cmd: None,
+            },
+            Case {
+                name: "G1 拒绝：MSI 落点整个落在某个 manager.root 内（第三条件）",
+                // 合成的极端形态，只为单独钉住 is_within 那一条
+                act: Act::Install,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    managers: vec![mgr(ManagerKind::Scoop, "C:\\Program Files")],
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("C:\\Program Files"),
+                want_cmd: None,
+            },
+            // ---- G3 mac brew install ----
+            Case {
+                name: "G3 放行：owner 就是 Brew（那是正常升级）",
+                act: Act::Install,
+                ch: Channel::MacBrewInstall,
+                env: NodeEnv {
+                    owner: NodeOwner::Brew,
+                    managers: vec![nvm()],
+                    active_node: Some(PathBuf::from("/opt/homebrew/Cellar/node/24.22.0/bin/node")),
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G3 放行：机器上没有任何管理器",
+                act: Act::Install,
+                ch: Channel::MacBrewInstall,
+                env: NodeEnv::default(),
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G3 拒绝：装了 nvm 且生效的不是 brew（凭空新增并行 runtime）",
+                act: Act::Install,
+                ch: Channel::MacBrewInstall,
+                env: NodeEnv {
+                    owner: NodeOwner::Manager(ManagerKind::Nvm),
+                    managers: vec![nvm()],
+                    active_node: Some(PathBuf::from(
+                        "/Users/u/.nvm/versions/node/v26.12.0/bin/node",
+                    )),
+                    version: Some("26.12.0".into()),
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("/Users/u/.nvm"),
+                want_cmd: Some("nvm install"),
+            },
+            // ---- G4 mac 官方 PKG 安装 ----
+            Case {
+                name: "G4 放行：裸 mac（无 node、无管理器）",
+                act: Act::Install,
+                ch: Channel::MacPkg,
+                env: NodeEnv::default(),
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G4 放行：receipt 在册的官方 PKG 安装（正常升级）",
+                act: Act::Install,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    owner: NodeOwner::SystemPkg,
+                    active_node: Some(PathBuf::from("/usr/local/bin/node")),
+                    pkg_receipt: true,
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G4 拒绝：有管理器（PKG 要么新增并行 runtime，要么覆盖 n 的当前版本）",
+                act: Act::Install,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    managers: vec![nvm()],
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("/Users/u/.nvm"),
+                want_cmd: None,
+            },
+            Case {
+                name: "G4 拒绝：/usr/local/bin/node 在，但不是 PKG 装的",
+                // 没有托管方（managers 空），文案只能报「归属认不出」，命令退化成只读定位
+                act: Act::Install,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    owner: NodeOwner::SystemPkg,
+                    active_node: Some(PathBuf::from("/usr/local/bin/node")),
+                    pkg_receipt: false,
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: None,
+                want_cmd: Some("ls -l /usr/local/bin/node"),
+            },
+            // ---- G5 mac 卸载 ----
+            Case {
+                name: "G5 拒绝：没有 receipt 不得盲删 /usr/local/bin/node",
+                act: Act::Uninstall,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    active_node: Some(PathBuf::from("/usr/local/bin/node")),
+                    owner: NodeOwner::SystemPkg,
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: None,
+                want_cmd: Some("ls -l"),
+            },
+            Case {
+                name: "G5 放行：receipt 在册",
+                act: Act::Uninstall,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    owner: NodeOwner::SystemPkg,
+                    pkg_receipt: true,
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G5 放行：生效 node 就是 brew 那份",
+                act: Act::Uninstall,
+                ch: Channel::MacPkg,
+                env: NodeEnv {
+                    owner: NodeOwner::Brew,
+                    managers: vec![nvm()],
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G5 旁路：brew 自管卸载删的是 brew 记账的目录，不在盲 rm 射程内",
+                act: Act::Uninstall,
+                ch: Channel::MacBrewInstall,
+                env: NodeEnv {
+                    owner: NodeOwner::Manager(ManagerKind::Nvm),
+                    managers: vec![nvm()],
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            // ---- G6 Win 卸载 ----
+            Case {
+                name: "G6 放行：裸 MSI 注册项（落点与任何管理器无关）",
+                act: Act::Uninstall,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    owner: NodeOwner::SystemPkg,
+                    managers: vec![mgr(ManagerKind::Scoop, "C:\\Users\\u\\scoop\\apps\\nodejs")],
+                    ..Default::default()
+                },
+                want_allow: true,
+                want_root: None,
+                want_cmd: None,
+            },
+            Case {
+                name: "G6 拒绝：系统目录指向 nvm-windows 自己的目录",
+                act: Act::Uninstall,
+                ch: Channel::WindowsMsi,
+                env: NodeEnv {
+                    managers: vec![nvm_windows()],
+                    nodejs_dir_is_reparse: true,
+                    ..Default::default()
+                },
+                want_allow: false,
+                want_root: Some("AppData"),
+                want_cmd: None,
+            },
+        ];
+
+        for c in &cases {
+            let got = match c.act {
+                Act::Install => check_install(&c.env, c.ch),
+                Act::Uninstall => check_uninstall(&c.env, c.ch),
+            };
+            match (&got, c.want_allow) {
+                (GuardDecision::Allow, true) => {}
+                (GuardDecision::Allow, false) => {
+                    panic!("用例「{}」应拒绝，实际放行", c.name)
+                }
+                (
+                    GuardDecision::Refuse {
+                        reason,
+                        commands,
+                        note,
+                    },
+                    false,
+                ) => {
+                    assert!(!commands.is_empty(), "用例「{}」拒绝却没给命令", c.name);
+                    assert!(note.is_some(), "用例「{}」缺逃生口提示", c.name);
+                    if let Some(root) = c.want_root {
+                        assert!(
+                            reason.contains(root),
+                            "用例「{}」的 reason 没自证托管方路径 {root}：{reason}",
+                            c.name
+                        );
+                    }
+                    if let Some(needle) = c.want_cmd {
+                        assert!(
+                            commands.iter().any(|x| x.contains(needle)),
+                            "用例「{}」的命令里没有 {needle}：{commands:?}",
+                            c.name
+                        );
+                    }
+                }
+                (GuardDecision::Refuse { reason, .. }, true) => {
+                    panic!("用例「{}」应放行，实际拒绝：{reason}", c.name)
+                }
+            }
+        }
+    }
+
+    /// D2：`owner = Unknown` 本身不拦安装（安装可逆，误拦的代价看得见也绕得开）。
+    /// 这条是防手滑的锁——以后谁往安装条件里加 `Unknown` 就会挂在这里。
+    #[test]
+    fn guard_unknown_owner_never_blocks_install() {
+        let env = NodeEnv {
+            owner: NodeOwner::Unknown,
+            active_node: Some(PathBuf::from("/opt/tools/node")),
+            managers: vec![mgr(ManagerKind::Nvm, "/Users/u/.nvm")],
+            ..Default::default()
+        };
+        // 渠道逐个试。mac 两条是纯 Unknown 现场（managers 会经由 G3/G4 自己拦，
+        // 所以这里单独构造 managers 为空的版本）
+        let bare = NodeEnv {
+            managers: vec![],
+            ..env.clone()
+        };
+        assert_eq!(check_install(&bare, Channel::MacPkg), GuardDecision::Allow);
+        assert_eq!(
+            check_install(&bare, Channel::MacBrewInstall),
+            GuardDecision::Allow
+        );
+        // Windows：Unknown 且没有 reparse / NVM_SYMLINK 证据时必须放行（A6 裸 MSI 场景）
+        assert_eq!(
+            check_install(&env, Channel::WindowsMsi),
+            GuardDecision::Allow
+        );
+
+        // 卸载侧相反：Unknown 参与保守判定（无 receipt 就不许盲删）
+        assert_ne!(
+            check_uninstall(&bare, Channel::MacPkg),
+            GuardDecision::Allow,
+            "D2 的保守只应体现在卸载侧"
+        );
+    }
+
+    /// 版本令牌替换：护栏建议的版本必须与 DevUp 本来要装的那一个一致
+    #[test]
+    fn guard_apply_target_version_fills_token() {
+        let env = NodeEnv {
+            owner: NodeOwner::Manager(ManagerKind::Nvm),
+            managers: vec![mgrv(ManagerKind::Nvm, "/Users/u/.nvm", &["v26.12.0"])],
+            version: Some("26.12.0".into()),
+            ..Default::default()
+        };
+        let got = apply_target_version(check_install(&env, Channel::MacBrewInstall), "v24.22.0");
+        let GuardDecision::Refuse { commands, .. } = got else {
+            panic!("nvm 在场的 brew install 必须被拦");
+        };
+        assert_eq!(
+            commands,
+            vec![
+                "nvm install 24.22.0".to_string(),
+                "nvm use 24.22.0".to_string()
+            ]
+        );
+        // 令牌不能漏在文案里（用户会照抄横幅上的命令）
+        for c in &commands {
+            assert!(!c.contains(GUARD_VERSION_TOKEN), "命令残留令牌: {c}");
+        }
+
+        // Allow 路径原样返回
+        assert_eq!(
+            apply_target_version(GuardDecision::Allow, "v24.22.0"),
+            GuardDecision::Allow
+        );
+    }
+
+    /// 每个 ManagerKind 都必须给得出至少一条命令：拒绝横幅不能是空的
+    #[test]
+    fn guard_commands_cover_every_manager_kind() {
+        let kinds = [
+            ManagerKind::Nvm,
+            ManagerKind::NvmWindows,
+            ManagerKind::Fnm,
+            ManagerKind::Volta,
+            ManagerKind::Mise,
+            ManagerKind::Asdf,
+            ManagerKind::Proto,
+            ManagerKind::N,
+            ManagerKind::Scoop,
+            ManagerKind::Nvs,
+        ];
+        for kind in kinds {
+            let env = NodeEnv {
+                owner: NodeOwner::Manager(kind),
+                managers: vec![mgr(kind, "/Users/u/mgr-root")],
+                ..Default::default()
+            };
+            let got = apply_target_version(check_install(&env, Channel::MacPkg), "24.22.0");
+            let GuardDecision::Refuse {
+                reason, commands, ..
+            } = got
+            else {
+                panic!("{kind:?} 有管理器在场时 PKG 必须被拦");
+            };
+            assert!(
+                reason.contains(kind.label()),
+                "{kind:?} 的文案没点名托管方：{reason}"
+            );
+            assert!(
+                !commands.is_empty() && reason.contains("/Users/u/mgr-root"),
+                "{kind:?} 缺命令或 reason 缺路径：{commands:?} / {reason}"
+            );
+            for c in &commands {
+                assert!(!c.contains(GUARD_VERSION_TOKEN), "{kind:?} 残留令牌: {c}");
+            }
+        }
+    }
+
+    /// 真机护栏结论：`cargo test -- --ignored --nocapture dump_guard_decisions`
+    ///
+    /// 这是「点不到 GUI」时最接近真实的验证：本机装了 nvm + volta、没装 brew node、
+    /// `pkg_receipt=false`，所以预期 `MacBrewInstall` 与 `MacPkg` 都该拒绝，
+    /// `WindowsMsi` 该放行（两条 Windows 事实标志在本机恒 false，代码路径未经 Windows 验证）。
+    #[test]
+    #[ignore]
+    fn dump_guard_decisions() {
+        let env = detect();
+        let ver = crate::detector::Detector::get_latest_version("nodejs")
+            .unwrap_or_else(|| "?".to_string());
+        println!("== 本机 NodeEnv ==");
+        println!("owner          = {:?}", env.owner);
+        println!("active_node    = {:?}", env.active_node);
+        println!("version        = {:?}", env.version);
+        println!("managers       = {:?}", env.managers);
+        println!("pkg_receipt    = {}", env.pkg_receipt);
+        println!(
+            "reparse/symlink = {}/{}",
+            env.nodejs_dir_is_reparse, env.nvm_symlink_is_nodejs_dir
+        );
+        println!("目标版本       = {ver}");
+
+        for ch in [
+            Channel::WindowsMsi,
+            Channel::MacPkg,
+            Channel::MacBrewInstall,
+        ] {
+            println!("\n---- 渠道 {ch:?} ----");
+            for is_install in [true, false] {
+                let raw = if is_install {
+                    check_install(&env, ch)
+                } else {
+                    check_uninstall(&env, ch)
+                };
+                let label = if is_install { "安装" } else { "卸载" };
+                match apply_target_version(raw, &ver) {
+                    GuardDecision::Allow => println!("{label}: Allow"),
+                    GuardDecision::Refuse {
+                        reason,
+                        commands,
+                        note,
+                    } => {
+                        println!("{label}: Refuse");
+                        println!("  reason   = {reason}");
+                        for c in &commands {
+                            println!("  command  = {c}");
+                        }
+                        println!("  note     = {:?}", note.as_deref().unwrap_or(""));
+                    }
+                }
+            }
+        }
     }
 
     /// 人工核对全量探测结果：cargo test -- --ignored --nocapture

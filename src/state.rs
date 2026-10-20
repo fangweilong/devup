@@ -54,9 +54,7 @@ pub enum AppEvent {
     InstallError { target_id: String, error: String },
     /// 护栏拒绝这类「按设计没有执行」的指引。它不是错误，所以与 InstallError 分开：
     /// 前端渲染成中性/黄色横幅 + 可复制命令，复用红字失败样式会让用户以为 DevUp 坏了。
-    // 通路先于调用者落地：本任务只交付事件，构造点要等任务 D 的护栏拒绝分支。
-    // D 在 installer 侧调用 send_guidance 后，此处与函数上的 allow 都要一并撤掉。
-    #[allow(dead_code)]
+    /// 构造点：`installer::InstallerEngine::node_preflight()`（Node 所有权护栏 G1–G6）。
     Guidance {
         target_id: String,
         /// 为什么不做，一句话讲清归属，例如「Node.js 由 nvm 托管」
@@ -86,7 +84,6 @@ pub enum AppEvent {
 ///
 /// 这里吞掉 SendError 是刻意的：发送失败只会发生在 WebView 已销毁时，而「指引没发出去」
 /// 不该改变拒绝的返回结果 —— 拒绝仍须按设计返回 `Ok(())`，不能因此翻成错误路径。
-#[allow(dead_code)] // 同 Guidance 变体：调用方是任务 D 的护栏拒绝分支
 pub fn send_guidance(
     event_sender: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
     target_id: &str,

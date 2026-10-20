@@ -7,10 +7,14 @@ pub mod npm;
 use anyhow::{bail, Result};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::detector::Detector;
+use crate::config::AppConfig;
+use crate::detector::{
+    apply_target_version, check_install, check_uninstall, detect, node_channel, Detector, Channel,
+    GuardDecision, NodeEnv, NodeOwner,
+};
 use crate::network::downloader::{create_http_client, download_file};
 use crate::network::mirrors::NODEJS_MIRROR_BASE;
-use crate::state::AppEvent;
+use crate::state::{send_guidance, AppEvent};
 
 #[cfg(windows)]
 use msi::WindowsInstaller;
@@ -84,6 +88,12 @@ fn agent_uninstall_pkgs(software_id: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// G6 卸载脚本模板：`__ROOTS__` 由 `InstallerEngine::node_uninstall_script` 填成 PowerShell
+/// 数组字面量（管理器数据目录）。刻意写成一行，原因见该方法注释。
+/// **Windows 分支本机未验证。**
+#[cfg(windows)]
+const NODE_UNINSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference='SilentlyContinue'; function DevupKey($p){ if([string]::IsNullOrWhiteSpace($p)){ return '' }; $s=($p -replace '[\\/]+','/').Trim(); if($s.Length -gt 1){ $s=$s.TrimEnd('/') }; return $s.ToLower() }; $managerRoots=@(__ROOTS__); $targets=@(); $owned=@(); foreach($pkg in @(Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue)){ $loc=DevupKey $pkg.InstallLocation; $hit=$false; foreach($r in $managerRoots){ $rk=DevupKey $r; if($rk -and $loc -and ($loc -eq $rk -or $loc.StartsWith($rk + '/'))){ $hit=$true; break } }; if($hit){ $owned+=('{0} [{1}]' -f $pkg.Name,$pkg.InstallLocation) } else { $targets+=$pkg } }; foreach($t in $targets){ $t | Uninstall-Package -Force -ErrorAction SilentlyContinue | Out-Null }; Write-Output ('DEVUP_RESULT targets={0} owned={1}' -f $targets.Count,$owned.Count); foreach($o in $owned){ Write-Output ('DEVUP_OWNED ' + $o) }"#;
+
 impl InstallerEngine {
     /// 执行具体的软件安装任务（平台分发入口）
     pub async fn install_target(
@@ -92,13 +102,20 @@ impl InstallerEngine {
         mirror_config: crate::config::MirrorConfig,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // 平台函数返回 `false` = 护栏已出指引、本轮什么都没执行。这种收尾**不能**再发
+        // `InstallSuccess`：前端收到它会 `delete state.guidance[target_id]`（`ui/app.js:92-94`），
+        // 刚挂上的黄色横幅会被自己抹掉，还把「未代为执行」渲染成「安装完成」。
         #[cfg(windows)]
         {
-            Self::install_target_windows(software_id, proxy_url, mirror_config, &event_sender).await?;
+            if !Self::install_target_windows(software_id, proxy_url, mirror_config, &event_sender).await? {
+                return Ok(());
+            }
         }
         #[cfg(target_os = "macos")]
         {
-            Self::install_target_macos(software_id, proxy_url, mirror_config, &event_sender).await?;
+            if !Self::install_target_macos(software_id, proxy_url, mirror_config, &event_sender).await? {
+                return Ok(());
+            }
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -116,13 +133,18 @@ impl InstallerEngine {
         software_id: &str,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // 同 `install_target`：护栏拒绝的收尾不发 `InstallSuccess`，否则前端会清掉指引横幅
         #[cfg(windows)]
         {
-            Self::uninstall_target_windows(software_id, &event_sender).await?;
+            if !Self::uninstall_target_windows(software_id, &event_sender).await? {
+                return Ok(());
+            }
         }
         #[cfg(target_os = "macos")]
         {
-            Self::uninstall_target_macos(software_id, &event_sender).await?;
+            if !Self::uninstall_target_macos(software_id, &event_sender).await? {
+                return Ok(());
+            }
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -144,6 +166,167 @@ impl InstallerEngine {
                 message: msg,
             });
         }
+    }
+
+    /// Node 所有权护栏：安装/卸载四条路径共用的前置判定（G1/G3/G4/G5/G6 的规则本体在
+    /// `detector::node_source`，这里只做取证调度、`node.mode` 开关、日志与事件呈现）。
+    ///
+    /// 返回 `None` 表示护栏已出指引，调用方**只需 `return Ok(false)`**：这不是错误，不能走
+    /// `bail!` / `InstallError`；任务态收尾（清 `activeTaskId`、收起进度、恢复按钮）由前端
+    /// `handleGuidance` 代管（设计文档 D3）。返回 `Some(node_env)` 表示放行，env 带回来是给
+    /// Windows 卸载侧用的（G6 的精确判据「`InstallLocation` 落在管理器目录内」只能在脚本侧做，
+    /// 而管理器根目录清单只有探测结果里有）。
+    ///
+    /// 为什么拒绝要回 `Ok(false)` 而不是 `Ok(())`：外层 `install_target` / `uninstall_target`
+    /// 会在平台函数正常返回后发 `InstallSuccess`，而前端收到它第一件事就是
+    /// `delete state.guidance[target_id]`（`ui/app.js:92-94`）——刚挂上的横幅会被自己抹掉，
+    /// 还把「未代为执行」渲染成「安装完成」。`false` 就是让外层跳过那次发送。
+    ///
+    /// **线程结论**：`detect()` 背着最长约 2s 的子进程等待（`npm config get prefix` 2s /
+    /// `pkgutil --pkgs` 2s / `node --version` 3s 上限），所以整段包进 `spawn_blocking`。
+    /// 安装/卸载本身并不在 UI 事件循环线程上跑——`main.rs` 的 IPC 分支是
+    /// `rt_for_ipc.spawn(async move { InstallerEngine::install_target(...) })`，落在 tokio
+    /// worker 线程；但同一个 multi-thread runtime 上还挂着事件桥接任务（`main.rs` 里转发
+    /// `tokio_event_rx` 的那条循环），阻塞 worker 就是在挤占它，`spawn_blocking` 是阻塞调用的正解。
+    async fn node_preflight(
+        software_id: &str,
+        ch: Channel,
+        uninstall: bool,
+        event_sender: &UnboundedSender<AppEvent>,
+    ) -> Option<NodeEnv> {
+        // 非 Node 目标零成本短路：护栏只管 nodejs，不能给 Git / PowerShell / Agent 的安装
+        // 连带加一次磁盘读 + 子进程探测
+        if software_id != "nodejs" {
+            return Some(NodeEnv::default());
+        }
+        let log = Self::make_log(event_sender, software_id);
+
+        // 开关与探测在同一次 blocking 任务里（`AppConfig::load()` 同样是磁盘动作）。
+        // 为什么从磁盘读、而不是用 main.rs 里那份 `Arc<Mutex<AppConfig>>`：`install_target`
+        // 的签名只接 `MirrorConfig`，而 `node.mode` 在 M0 没有 UI（D1）—— 唯一的改法是用户
+        // 手改 config.json，磁盘就是这件事的真相源，也免为一个开关去改跨层签名。
+        let (guards_enabled, env) = match tokio::task::spawn_blocking(|| {
+            let enabled = AppConfig::load().node_guards_enabled();
+            // 跳过护栏时连取证也不做：`mode = "system"` 的语义就是恢复旧行为，
+            // 不该为一次不会采用的判定付掉 detect() 的那 2s（Windows 卸载侧的脚本
+            // 因此拿到空的管理器清单，也就是「什么都不排除」，与旧行为一致）
+            (enabled, if enabled { detect() } else { NodeEnv::default() })
+        })
+        .await
+        {
+            Ok(pair) => pair,
+                // `JoinError::is_panic()` 是 `pub fn`（tokio 1.x），用 `is_panic` 而不是变体
+                // 匹配：这样不依赖 Panic 变体上是否带值，将来 tokio 改了字段也不会误判。
+                // 走到这里说明 detect 自己崩了（它内部所有失败路径都是 None/false 降级），
+                // 按「无归属证据」继续：安装侧各条判据都不命中即放行，mac 卸载侧因没有 receipt
+                // 而拒绝 —— 方向与护栏自身的保守性一致，不因为我们的故障就谎报成功。
+                Err(e) => {
+                    log(format!("Node 所有权探测未完成({e:?})，本次按「无归属证据」处理"));
+                    (true, NodeEnv::default())
+                }
+            };
+
+        if !guards_enabled {
+            // 逃生口生效时必须看得见（D1 不做 UI，日志首行是唯一提示位）
+            log("⚠ node.mode = \"system\"：本次已绕过 Node 所有权检查，DevUp 将直接向系统位置写入。".to_string());
+            return Some(env);
+        }
+
+        // 每次判定都留一行结论：排障时能直接看到护栏读到了什么，而不是只能猜
+        let managers = env
+            .managers
+            .iter()
+            .map(|m| format!("{}({})", m.kind.label(), m.root.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log(format!(
+            "Node 所有权判定: owner={:?} managers=[{}]（{} / {ch:?}）",
+            env.owner,
+            managers,
+            if uninstall { "卸载" } else { "安装" }
+        ));
+        if env.owner == NodeOwner::Unknown {
+            // D2：Unknown 不拦安装，但要在日志留痕（卡片侧提示归任务 E）
+            log(format!(
+                "Node 来源未识别：{:?}（安装侧按 D2 不拦，卸载侧按保守处理）",
+                env.active_node
+            ));
+        }
+
+        let raw = if uninstall {
+            check_uninstall(&env, ch)
+        } else {
+            check_install(&env, ch)
+        };
+        // 护栏建议的版本必须与 DevUp 本来要装的那一个一致（内存缓存，离线时退回内置基线）
+        let ver = Detector::get_latest_version("nodejs").unwrap_or_default();
+        match apply_target_version(raw, &ver) {
+            GuardDecision::Allow => Some(env),
+            GuardDecision::Refuse {
+                reason,
+                commands,
+                note,
+            } => {
+                send_guidance(event_sender, software_id, reason, commands, note);
+                None
+            }
+        }
+    }
+
+    /// G6 的脚本侧过滤（**Windows 分支本机未验证**，无 Windows 环境）。
+    ///
+    /// 为什么必须改写旧脚本：`Get-Package -Name 'Node.js*' | Uninstall-Package -Force` 是按
+    /// **名称通配**删的，而 nvm-windows / scoop 装的 node 在注册表里同样登记成 `Node.js ...`，
+    /// 于是「卸载 DevUp 认为的 node」会变成「删掉用户托管方的 runtime」。现在的判据是
+    /// `InstallLocation` 归一化后是否落在某个 `manager.root` 内 —— 与 `node_source` 的
+    /// `path_key`/`is_within` 同一套规则（分隔符同视、大小写折叠、去尾分隔符、边界必须落在
+    /// `/` 上），只是那份逻辑在 PowerShell 里重写了一遍：脚本在目标机上跑，Rust 侧够不到
+    /// `Get-Package` 的结果。
+    ///
+    /// 整段写成一行（`;` 分隔）：`powershell.exe -Command` 传多行文本时，换行会被它的
+    /// 命令行再解析当成语句边界截掉，单行没有这个问题，也就不必临时落一个 .ps1 文件或
+    /// 依赖 `-EncodedCommand`。
+    ///
+    /// 刻意的保守：`InstallLocation` 取不到（空）时按「非管理器」处理，交给 Uninstall-Package。
+    /// 反过来会把裸 MSI 机器（A6 验收项）也一起拦掉，那是功能回归而非安全收益。
+    #[cfg(windows)]
+    fn node_uninstall_script(managers: &[crate::detector::Manager]) -> String {
+        // 注册表里没有管理器证据时传空数组：脚本照跑，只是没什么可排除的
+        // （`mode = "system"` 跳过护栏时也是这一形态 —— 逃生口的语义就是恢复旧行为）
+        let roots = managers
+            .iter()
+            .map(|m| format!("'{}'", m.root.to_string_lossy().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        NODE_UNINSTALL_SCRIPT_TEMPLATE.replace("__ROOTS__", &roots)
+    }
+
+    /// 只认脚本自己打的 `DEVUP_RESULT targets=.. owned=..` 与 `DEVUP_OWNED <明细>` 两类行；
+    /// PowerShell 的其它输出（provider 噪音、进度）不参与判定。解析不到一律按 0 处理：
+    /// 宁可再要一次指引，也不谎报「卸载成功」。
+    #[cfg(windows)]
+    fn parse_node_uninstall_result(text: &str) -> (usize, usize, Vec<String>) {
+        let mut targets = 0usize;
+        let mut owned = 0usize;
+        let mut items: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let l = line.trim();
+            if let Some(rest) = l.strip_prefix("DEVUP_RESULT") {
+                for kv in rest.split_whitespace() {
+                    if let Some(v) = kv.strip_prefix("targets=") {
+                        targets = v.parse().unwrap_or(0);
+                    } else if let Some(v) = kv.strip_prefix("owned=") {
+                        owned = v.parse().unwrap_or(0);
+                    }
+                }
+            } else if let Some(item) = l.strip_prefix("DEVUP_OWNED") {
+                let item = item.trim();
+                if !item.is_empty() {
+                    items.push(item.to_string());
+                }
+            }
+        }
+        (targets, owned, items)
     }
 
     /// 跨平台共享的 Agent 安装：原生自升级优先，npmmirror 全局安装兜底
@@ -270,13 +453,26 @@ impl InstallerEngine {
 
     // ==================== Windows ====================
 
+    /// Windows 安装。返回 `false` 表示「护栏已出指引、本轮未执行」（见 `install_target`）。
+    /// **本函数内的 Node/卸载分支本机未验证（无 Windows 环境）。**
     #[cfg(windows)]
     async fn install_target_windows(
         software_id: &str,
         proxy_url: Option<String>,
         mirror_config: crate::config::MirrorConfig,
         event_sender: &UnboundedSender<AppEvent>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        // G1 护栏：必须早于 create_http_client / 下载 / 临时目录创建——下载几十 MB 之后才被拒
+        // 是最差体验。非 nodejs 目标在 `node_preflight` 内零成本短路，所以其他卡片不受影响。
+        // Windows 只有 MSI 一条路，`node_channel` 的第一个参数在这里被忽略。
+        // **Windows 分支本机未验证。**
+        if Self::node_preflight(software_id, node_channel(false), false, event_sender)
+            .await
+            .is_none()
+        {
+            return Ok(false);
+        }
+
         let proxy_ref = proxy_url.as_deref();
         let client = create_http_client(proxy_ref)?;
 
@@ -315,7 +511,7 @@ impl InstallerEngine {
                     log("检测到 Windows Terminal 来自 WinGet/应用商店，执行原生渠道静默升级...".into());
                     if let Ok(()) = WindowsInstaller::upgrade_via_winget("Microsoft.WindowsTerminal", log.clone()).await {
                         log("Windows Terminal 通过 WinGet 渠道更新成功！".into());
-                        return Ok(());
+                        return Ok(true);
                     }
                     log("WinGet 渠道更新失败或已是最新，回退到国内 GitHub 离线包安装...".into());
                 }
@@ -364,7 +560,7 @@ impl InstallerEngine {
                     log("检测到 Git 注册于 WinGet，优先执行 winget 原生渠道更新...".into());
                     if let Ok(()) = WindowsInstaller::upgrade_via_winget("Git.Git", log.clone()).await {
                         log("Git 通过 WinGet 更新成功！".into());
-                        return Ok(());
+                        return Ok(true);
                     }
                     log("WinGet 更新回退，改用官网安装包...".into());
                 }
@@ -411,14 +607,17 @@ impl InstallerEngine {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
+    /// Windows 卸载。返回 `false` 表示「护栏已出指引、本轮未删除任何东西」。
+    /// **G6 分支本机未验证（无 Windows 环境）**：脚本与结果解析按 PowerShell 语义写就，
+    /// 真机需补测（见交付报告与 `docs/plan-m0-node-guardrails.md` §4.2 A5/A6）。
     #[cfg(windows)]
     async fn uninstall_target_windows(
         software_id: &str,
         event_sender: &UnboundedSender<AppEvent>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let log = Self::make_log(event_sender, software_id);
         log(format!(">>> 开始执行卸载任务: {}", software_id));
 
@@ -457,14 +656,74 @@ impl InstallerEngine {
             }
 
             "nodejs" => {
-                log("正在通过 MSI/Package 接口执行 Node.js 静默卸载...".into());
-                let script = "Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue | Uninstall-Package -Force";
+                // G6 第一步（静态证据）：`C:\Program Files\nodejs` 本身已被版本管理器接管时，
+                // 连卸载脚本都不必跑
+                // Windows 只有 MSI 一条路（`node_channel` 的参数被忽略）；这里要接住 env，
+                // 因为 G6 的精确过滤需要管理器根目录清单
+                let env = match Self::node_preflight(software_id, node_channel(false), true, event_sender)
+                    .await
+                {
+                    None => return Ok(false),
+                    Some(env) => env,
+                };
+
+                log("正在通过 MSI/Package 接口执行 Node.js 静默卸载（按 InstallLocation 排除版本管理器自有目录）...".into());
+                let script = Self::node_uninstall_script(&env.managers);
                 let mut cmd = tokio::process::Command::new("powershell.exe");
                 log(format!("$ powershell.exe -NoProfile -Command \"{}\"", script));
                 #[cfg(windows)]
                 cmd.creation_flags(0x08000000);
-                let _ = cmd.args(["-NoProfile", "-Command", script]).output().await;
-                log("Node.js 卸载指令已提交！".into());
+                let out = cmd.args(["-NoProfile", "-Command", &script]).output().await?;
+                // 只认脚本自己打的那一行机器可读结论，PowerShell 的其它输出（进度、
+                // Provider 噪音）不参与判定
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                let (targets, owned_count, owned_items) = Self::parse_node_uninstall_result(&text);
+                // 明细行比计数行更具体，但计数行更早打印；取两者的大值，避免 stdout 被截
+                // 时把「挡住了一些」误报成「什么都没找到」
+                let owned = owned_count.max(owned_items.len());
+
+                if targets > 0 {
+                    if owned > 0 {
+                        log(format!(
+                            "已跳过 {owned} 项指向版本管理器自己目录的注册项（DevUp 不代删托管方的 runtime）。"
+                        ));
+                    }
+                    log(format!("Node.js 卸载指令已提交（{targets} 项）！"));
+                    return Ok(true);
+                }
+
+                // 「一个都没命中」不是成功：要么本就没装，要么全被护栏挡在管理器目录里，
+                // 两种情况用户需要知道差在哪，所以文案分开写。
+                let (reason, commands) = if owned == 0 {
+                    (
+                        "没有发现 Node.js 的 MSI / 程序注册项，DevUp 没有执行任何删除。".to_string(),
+                        Vec::new(),
+                    )
+                } else {
+                    (
+                        format!(
+                            "找到的 {owned} 项 Node.js 注册项全部指向版本管理器自己的目录，DevUp 不代删：\n{}",
+                            owned_items.join("\n")
+                        ),
+                        crate::detector::hint_commands(&env)
+                            .iter()
+                            .map(|c| {
+                                crate::detector::fill_version_token(
+                                    c,
+                                    &Detector::get_latest_version("nodejs").unwrap_or_default(),
+                                )
+                            })
+                            .collect(),
+                    )
+                };
+                send_guidance(
+                    event_sender,
+                    software_id,
+                    reason,
+                    commands,
+                    Some(crate::detector::GUARD_ESCAPE_NOTE.to_string()),
+                );
+                Ok(false)
             }
 
             "git" => {
@@ -509,18 +768,30 @@ impl InstallerEngine {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     // ==================== macOS ====================
 
+    /// macOS 安装。返回 `false` 表示「护栏已出指引、本轮未执行」（见 `install_target`）。
     #[cfg(target_os = "macos")]
     async fn install_target_macos(
         software_id: &str,
         proxy_url: Option<String>,
         mirror_config: crate::config::MirrorConfig,
         event_sender: &UnboundedSender<AppEvent>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        // G3/G4 护栏：必须早于 create_http_client / 下载 / 临时目录。渠道按「这次会往哪写」选，
+        // 用的就是下面 nodejs 分支那同一次 `brew_available()` 探测（`&&` 短路让非 nodejs 目标
+        // 连这次 which() 都不必跑）。
+        let brew_ready = software_id == "nodejs" && MacInstaller::brew_available();
+        if Self::node_preflight(software_id, node_channel(brew_ready), false, event_sender)
+            .await
+            .is_none()
+        {
+            return Ok(false);
+        }
+
         let proxy_ref = proxy_url.as_deref();
         let client = create_http_client(proxy_ref)?;
 
@@ -545,7 +816,9 @@ impl InstallerEngine {
             }
 
             "nodejs" => {
-                if MacInstaller::brew_available() {
+                // 复用护栏那一次探测：渠道判定与实际写入路径必须同源，否则「按 brew 拦、
+                // 按 PKG 装」这种自相矛盾的结论就可能发生
+                if brew_ready {
                     log("通过 Homebrew 安装/升级 Node.js LTS（清华 bottle 加速）...".into());
                     MacInstaller::brew_install_or_upgrade("node", log.clone()).await?;
                     log("Node.js LTS 安装成功！".into());
@@ -595,14 +868,15 @@ impl InstallerEngine {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
+    /// macOS 卸载。返回 `false` 表示「护栏已出指引、本轮未删除任何东西」（G5）。
     #[cfg(target_os = "macos")]
     async fn uninstall_target_macos(
         software_id: &str,
         event_sender: &UnboundedSender<AppEvent>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let log = Self::make_log(event_sender, software_id);
         log(format!(">>> 开始执行卸载任务: {}", software_id));
 
@@ -615,7 +889,17 @@ impl InstallerEngine {
             }
 
             "nodejs" => {
-                if MacInstaller::brew_installed_formula("node") {
+                // G5：护栏必须早于任何删除动作（现状是闭眼 `rm -rf /usr/local/bin/node`）。
+                // 渠道与下面实际走的分支同源：brew 自管移除不在 G5 射程，只有要动 /usr/local
+                // 时才要求 PKG receipt 或 owner=Brew 的证据。
+                let brew_node = MacInstaller::brew_installed_formula("node");
+                if Self::node_preflight(software_id, node_channel(brew_node), true, event_sender)
+                    .await
+                    .is_none()
+                {
+                    return Ok(false);
+                }
+                if brew_node {
                     log("正在通过 Homebrew 卸载 node formula...".into());
                     MacInstaller::brew_run(&["uninstall", "node"], log.clone()).await?;
                 } else {
@@ -645,6 +929,6 @@ impl InstallerEngine {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 }

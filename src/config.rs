@@ -132,8 +132,9 @@ impl AppConfig {
     /// Node 所有权护栏是否启用：仅显式配置 "system"（忽略大小写与首尾空格）时跳过
     ///
     /// 其余任何值——空串、未知值、乱填——都按启用处理：安全闸默认打开，填错不会静默绕过护栏。
-    // 生产调用方由 M0 后续任务的护栏（G1–G6）接入，届时移除该 allow
-    #[allow(dead_code)]
+    ///
+    /// 生产调用方：`installer::InstallerEngine::node_preflight()`（每次安装/卸载 nodejs 时
+    /// 从磁盘重读，见那边的注释——`node.mode` 在 M0 没有 UI，手改的 config.json 才是真相源）。
     pub fn node_guards_enabled(&self) -> bool {
         self.node.mode.trim().to_lowercase() != "system"
     }
