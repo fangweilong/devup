@@ -228,7 +228,7 @@ impl AppConfig {
 
 ### 2.7 `src/detector/env_check.rs` — 仅一处口径修正
 
-`infer_install_method`（`env_check.rs:231-259`）现在把路径含 `nvm` 判为 `"npm"`，这与「npm 全局包」混为一谈。M0 改为按 `NodeEnv.owner` 产出 `"nvm"` / `"volta"` / `"fnm"` 等真实托管标签（前端仅原样展示，`ui/app.js:532` 读的是 `winget` 分支，不受影响）。**按 D4，`managed_by` 提前进 M0**：`SoftwareStatus` 新增 `managed_by: Option<String>`，且「检测到 manager 但 GUI PATH 里解析不到 node」时**不再显示未安装**，而是显示 `由 nvm 托管`，版本从 `~/.nvm/versions/node/*` 目录名取最新一个。要点：
+`infer_install_method`（`env_check.rs`）把路径含 `nvm` 判为 `"npm"`，用来描述 **runtime** 是错的（Agent 落在 `~/.nvm/versions/node/*/bin` 下确实就是 npm 全局包，判 `"npm"` 没错）。**任务 E 的裁定（§9 R11）：不重写 `infer_install_method`，只在 nodejs 卡片上用 `NodeEnv.owner` 覆盖 `install_method`**（Manager → `label()`，Brew → `"brew"`，`SystemPkg`/`Unknown`/`None` 沿用旧推断）。原规格那句「M0 改为按 owner 产出真实托管标签」写糙了——字面执行会连带改 8 张卡片的呈现，属于我自己给的约束之外的改动。**按 D4，`managed_by` 提前进 M0**：`SoftwareStatus` 新增 `managed_by: Option<String>`，且「检测到 manager 但 GUI PATH 里解析不到 node」时**不再显示未安装**，而是显示 `由 nvm 托管`，版本从 `~/.nvm/versions/node/*` 目录名取最新一个。要点：
 
 - `installed` 仍按「能否真正执行到 node」判定（GUI 场景为 false），但前端遇到 `managed_by = Some("nvm")` 时**不渲染「未安装」**，改渲染「由 nvm 托管」；
 - badge 新增一个状态 `托管中`（既不是「需更新」也不是「已是最新」）——因为 DevUp 不认为自己对那份 runtime 负责；
@@ -336,7 +336,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 4. 不动 `docs/`（文档由主 agent 更新，避免并发写冲突）。
 5. Windows 分支代码照常写，但标注为「本机未验证」，不得声称已验证。
 6. 提交由主 agent 负责，每个任务两个提交：代码提交（`feat|fix(scope): …`）+ 文档状态提交（`docs(plan): …`，把 §8 状态表填上真实提交号）。
-7. 格式化只允许 `rustfmt --edition 2024 <显式文件清单>`，且**清单里不得出现含 `mod xxx;` 声明的文件**——rustfmt 会跟随模块声明递归格式化子模块。任务 B 收尾时主 agent 把 `src/detector/mod.rs` 传了进去，导致 `env_check.rs` 被整体重排（+96/−32 纯格式化改动，无逻辑变化，已 `git checkout` 还原）。既有文件一律不动，新文件必须 rustfmt-clean。
+7. 格式化只允许 `rustfmt --edition 2024 <显式文件清单>`，且**清单里不得出现含 `mod xxx;` 声明的文件**——rustfmt 会跟随模块声明递归格式化子模块。任务 B 收尾时主 agent 把 `src/detector/mod.rs` 传了进去，导致 `env_check.rs` 被整体重排（+96/−32 纯格式化改动，无逻辑变化，已 `git checkout` 还原）。格式化的可执行判据分两种：**流水线新建的文件**必须 `rustfmt --edition 2024 <该文件>` 后 `--check` 无输出（这类文件没有 `mod xxx;` 声明，单独格式化不外溢）；**既有文件一律不动**，判断有没有偷跑格式化的证据看 `git diff --stat` 的 **deletions 数量**——真跑过 fmt 会产生几十处删除，语义改动的删除数应与改动规模相称（任务 E 是 412 增 / 7 删、后续 11 增 / 19 删，都属正常）。既有文件里新增的行天然可能不够 canonical（`env_check.rs` 从 12 处 hunk 变 16 处），这是可接受的，不为此整片重排。
 8. 子 agent 的 `result` / idle 摘要**不得作为验收依据**。任务 B 期间实测到三类不一致：报告「27 passed」时工作树其实编译不过（真实的半成品中间态）；`TaskStop` 返回成功后其进程仍存活并继续投递消息；自述「已 `touch` 两个文件强制重编译」但文件 mtime 仍是主 agent 的操作时刻、15:05 后无任何写入痕迹。所有数字一律由主 agent 自己重跑 `cargo test` / `cargo build` / `git status` / `stat` 得出。
 
 | 任务 | agent 名 | 范围（文件） | 依赖 | 完成判据 |
@@ -360,7 +360,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | B `node-env` | ✅ 已完成 | `24c6a9c` | 27 passed / 3 ignored、build 0 warning、新文件 rustfmt-clean。**过程记录**：第一版交回时工作树编译不过（结构改动做了一半），第二版补齐但 `managers_with_versions()` 实为 `managers` 的别名，最后两项由主 agent 代为收尾；主 agent 自己误用 `rustfmt src/detector/mod.rs` 递归重排了 `env_check.rs`（已还原，教训进 §7 约束 7） |
 | C `node-guide` | ✅ 已完成 | `ba89d60` | 30 passed / 3 ignored、build 0 warning、`node --check` 通过、381 insertions + **0 deletions**（未跑 fmt 的硬证据）、只碰清单内 3 文件。**新增两处 `allow` 已并入 D 的清理判据**；`main.rs` 零改动即接通（派发是变体无关的 serde） |
 | D `node-guard` | ✅ 已完成 | `b442fdf` | 34 passed / 4 ignored、build 0 warning、四处 allow 全清（grep 只剩 `proxy.rs` / `updater.rs` 的既有项）、接入点均在下载之前、`detect()` 走 `spawn_blocking`；`node_source.rs` 被它带回 9 处 fmt hunk，已由主 agent 单独 rustfmt 复原为 0。**7 处偏离的裁定见 §9 台账** |
-| E `node-card` | ⏳ 待开 | — | |
+| E `node-card` | ✅ 已完成 | `33ac30e` + `e61afc8` | 39 passed / 5 ignored、build 0 warning、`node --check` OK、`detect_all()` 每轮只取证一次；A7 现场实跑复现（GUI 模拟：`managed_by=nvm`、`installed=false`，不再报「未安装」）。两处返工见 R12/R13；R9 决定不动 `main.rs`；**R14 的前端组合无自动化覆盖，是 G 的走查项** |
 | F `node-uninstall` | ⏳ 待开 | — | |
 | G `node-verify` | ⏳ 待开 | — | |
 
@@ -378,3 +378,9 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **R6**（D-F） | mac 卸载按实际路由传渠道：`brew_installed_formula("node")` 为真 → `MacBrewInstall`（`check_uninstall` 放行）；只有要走 `remove_pkg_node_files` 才按 `MacPkg` 适用 G5 | **采纳** | G5 拦的是「闭眼 `rm -rf /usr/local/bin/node`」，`brew uninstall node` 删的是 brew 自己记账的目录，不在射程内。副作用已知：装了 brew node 却被 nvm 遮蔽的机器仍会放行卸载——这是「谁装的谁移除」的一致口径，不改成严格字面 |
 | **R7**（D-G） | `owner = Unknown` 本身不触发拒绝（D2），但 G1 的三条**直接证据**（reparse / `NVM_SYMLINK` / 目录落在 manager.root 内）成立时照拦 | **采纳，并据此精确化 D2** | `classify` 的表里就有一条「目录是 reparse 却查不到管理器证据 → Unknown」；若连这种也放行，G1 的第一条触发条件形同虚设。D2 的本意一直是「归属不明**且无直接证据**时不误拦」，设计文档 §13 D2 已补这句限定 |
 | **R8**（主 agent 自身） | D 把 `node_source.rs` 的 fmt hunk 从 0 带回 9 处 | **已复原** | 该文件是流水线新建、按 §7 约束必须保持 rustfmt-clean；单独 `rustfmt --edition 2024` 该文件安全（已确认它没有文件级 `mod` 声明，不会递归外溢） |
+| **R9**（E-线程） | 启动首轮 `main.rs:382` 的 `detect_all()` 在主线程（早于 `:410` 的 `event_loop.run`），新增取证会不会拖慢首屏 | **不改 `main.rs`** | E 给了同机 A/B 对照（把首轮取证临时换成 `NodeEnv::default()`，各 3 次，测完逐字复原、HEAD 无残留）：新增成本 **GUI +28ms / 终端 +180ms**，而首轮本来就在这条线程跑 550–910ms 的既有探测。两个候选解法（展示路径跳过 `npm_prefix` 取证、首轮挪进 `rt.spawn` 走 `tokio_event_tx` 桥）都是在优化它的一小部分，不值得换跨层改动 + 首屏事件时序变化 |
+| **R10**（E-①） | `owner = Brew` / `SystemPkg` 时 `managed_by = None` | **采纳** | 那时生效 runtime 就在 DevUp 能直接操作的位置上，说「托管中」是假陈述；表驱动各钉一条用例 |
+| **R11**（E-②） | 没按规格重写 `infer_install_method`，只在 nodejs 卡片覆盖 | **采纳，且比规格更对** | 见 §2.7 已改正的口径：重写会连带改 8 张卡片，撞我自己在任务 C/E 都写过的「不动 agent 渲染」 |
+| **R12**（E-③④） | `#[serde(default)]` 补上；`hasUpdate` 曾加 `!isManaged` | ①**采纳**；②**已撤回**（`e61afc8`） | ②的副作用是 E 自己上报的：托管 + 已装的卡片会掉到「卸载 + 重新安装」行，而托管机器上卸载同样被 G5 拒绝——在两个都不会执行的动作里挑一个，还把主行动藏了。现在 `hasUpdate` 原判定、`isManaged` 只管 badge 与 meta |
+| **R13**（E-⑤） | `version_key` 曾在 `env_check.rs` 复制一份 + 注释「改动须同步」 | **已去重**（`e61afc8`） | 复制是我「不许动 `node_source.rs`」这条硬约束逼出来的次优解，正解是导出：`node_source.rs` 只改 `fn` → `pub fn` 一行（**这是 G 收口 grep 时该认下来的授权破例**，不算越界），`env_check` 调 `node_source::version_key`。§2.2 警告的漂移风险就此消失 |
+| **R14**（E，遗留） | 「托管中 badge + 升级最新按钮」并存**是设计意图**，且这条组合没有任何自动化测试钉住 | **交给 G 的 GUI 走查** | JS 侧只有 C 那条读 `handleGuidance` 文本的契约测试覆盖前端；视觉复核时别当矛盾状态改回去。要长期防回归得给 `renderAll` 抽一层可测纯函数，不属 M0 范围 |
