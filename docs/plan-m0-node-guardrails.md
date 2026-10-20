@@ -181,14 +181,25 @@ match NodeSource::check_install(&node_env, Channel::WindowsMsi) {
 ### 2.6 `src/config.rs` — 逃生口（唯一的行为开关）✅ D1 已定：M0 不做 UI
 
 ```rust
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NodeConfig {
     /// "auto"(默认，启用全部护栏) | "system"(跳过护栏，恢复 0.3.5 行为)
     pub mode: String,
 }
+impl Default for NodeConfig { /* mode = "auto" */ }   // 手写，与 MirrorConfig 风格一致
+
+impl AppConfig {
+    /// 仅显式 "system"（trim + 小写）跳过；空串/未知值/乱填一律启用护栏
+    pub fn node_guards_enabled(&self) -> bool;
+}
 ```
-挂到 `AppConfig`（`config.rs:54-59`）：`pub node: NodeConfig`。`#[serde(default)]` + 默认值 `"auto"` 保证老 `config.json` 平滑升级，沿用 `config.rs:158-199` 现有测试风格补一条缺字段回退单测。
+挂到 `AppConfig`（`config.rs:54-59`）：`pub node: NodeConfig`。`#[serde(default)]` + 默认值 `"auto"` 保证老 `config.json` 平滑升级，沿用 `config.rs:158-199` 现有测试风格补缺字段回退单测。
+
+**两条实现期裁定**（任务 A 复核时定，后续复核以本节为准，不要按旧 snippet 改回去）：
+
+1. `Default` 用**手写 impl** 而非 derive——对齐同文件 `MirrorConfig` 的既有写法。
+2. `node_guards_enabled()` 目前只有测试调用，`cargo build` 会报 `method is never used`，因此加了 `#[allow(dead_code)]` + 注释指明来源。**遗留项：任务 D（护栏接入）必须移除这个 allow**，否则它会永久留着。已登记在 §8。
 
 **M0 不为其提供 UI**：`system` 需要用户手改 `~/Library/Application Support/devup/config.json`（Win: `%APPDATA%\devup\config.json`）。理由：护栏误判时不能只留「改代码」这一条路；而给一个能绕过安全闸的默认可见开关，风险大于收益。跳过护栏时每次安装日志首行打印警告。
 
@@ -297,13 +308,14 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 3. 必须自带单测；结束时 `cargo test` 必须全绿，并给出「改了哪些函数 + 新增哪些断言 + 未覆盖的点」三行摘要。
 4. 不动 `docs/`（文档由主 agent 更新，避免并发写冲突）。
 5. Windows 分支代码照常写，但标注为「本机未验证」，不得声称已验证。
+6. 提交由主 agent 负责，每个任务两个提交：代码提交（`feat|fix(scope): …`）+ 文档状态提交（`docs(plan): …`，把 §8 状态表填上真实提交号）。
 
 | 任务 | agent 名 | 范围（文件） | 依赖 | 完成判据 |
 |---|---|---|---|---|
 | **A** 逃生口 | `node-cfg` | `src/config.rs` | — | `NodeConfig.mode` 缺字段回退 `"auto"`；`guards_enabled()` 单测（含 `"system"`、空串、未知值） |
 | **B** 所有权探测 | `node-env` | `src/detector/node_source.rs`(新)、`src/detector/mod.rs` | — | 表驱动 owner 判定全绿；`scan_shell_rc` fixture 含 `echo PWNED` 且断言无副作用；`--ignored` 探针输出本机 `NodeEnv` |
 | **C** 指引事件通路 | `node-guide` | `src/state.rs`、`src/main.rs`、`ui/app.js`、`ui/style.css` | — | `AppEvent::Guidance` 端到端可渲染（临时手动触发入口在测试后移除）；非红色横幅 + 命令可复制；`cargo test` 全绿 |
-| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `Guidance` 且返回 `Ok(())` |
+| **D** 护栏与接入 | `node-guard` | `src/detector/node_source.rs`、`src/installer/mod.rs`、`src/config.rs` | A B C | G1–G6 各一条允许 + 一条拒绝单测；拒绝发生在 `download_file` **之前**；走 `Guidance` 且返回 `Ok(())`；**移除 `node_guards_enabled()` 上的 `#[allow(dead_code)]`** |
 | **E** 显示但不代管 | `node-card` | `src/detector/env_check.rs`、`ui/app.js`、`ui/style.css` | B C | `managed_by` 落到 `SoftwareStatus`；nvm-only 机器显示「由 nvm 托管 · vX」而非「未安装」；badge 新状态 `托管中` |
 | **F** 卸载安全化 | `node-uninstall` | `src/installer/macos.rs`、`src/installer/mod.rs` | B D | 无 PKG receipt 时拒绝删除并说明；Win 卸载按 `InstallLocation` 过滤 manager 目录 |
 | **G** 回归与收口 | `node-verify` | 全量只读 + `README.md` | A–F | `cargo test` + A1b/A2/A4/A7 探针实跑记录；README 增「行为变更」小节；护栏拒绝文案复核 |
@@ -315,7 +327,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | 任务 | 状态 | 提交 | 备注 |
 |---|---|---|---|
 | 步 1 PATH | ✅ 已完成 | `7ffa93d` | 含计划偏差修正（补充目录插在系统兜底目录之前） |
-| A `node-cfg` | ⏳ 待开 | — | |
+| A `node-cfg` | ✅ 已完成 | `4930f8f` | 17 passed / 0 warning；**遗留：`node_guards_enabled()` 上的 `#[allow(dead_code)]` 必须在任务 D 移除**（已写进 D 的完成判据） |
 | B `node-env` | ⏳ 待开 | — | M0 最大工作量 |
 | C `node-guide` | ⏳ 待开 | — | |
 | D `node-guard` | ⏳ 待开 | — | |
