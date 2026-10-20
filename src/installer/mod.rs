@@ -288,22 +288,24 @@ impl InstallerEngine {
 
         match software_id {
             "powershell7" => {
-                let raw_url = "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi";
-                log(format!("正在根据配置解析 GitHub 下载源 (模式: {})...", mirror_config.github_mode));
-                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
+                let ver = Detector::get_latest_version("powershell7").unwrap_or_else(|| "v7.4.7".to_string());
+                let raw_ver = ver.trim_start_matches('v');
+                let raw_url = format!("https://github.com/PowerShell/PowerShell/releases/download/{}/PowerShell-{}-win-x64.msi", ver, raw_ver);
+                log(format!("正在根据配置解析 PowerShell 7 ({}) GitHub 下载源 (模式: {})...", ver, mirror_config.github_mode));
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, &raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
                 log(format!("选定加速下载链接: {}", download_url));
 
-                let dest = temp_dir.join("PowerShell-7.4.6-win-x64.msi");
+                let dest = temp_dir.join(format!("PowerShell-{}-win-x64.msi", raw_ver));
                 let tx_progress = event_sender.clone();
                 download_file(&client, &download_url, &dest, software_id, move |p| {
                     let _ = tx_progress.send(AppEvent::Progress(p));
                 })
                 .await?;
 
-                log("下载完成，正在后台静默安装 PowerShell 7...".into());
+                log(format!("下载完成，正在后台静默安装 PowerShell 7 ({})...", ver));
                 log(format!("$ msiexec.exe /i \"{}\" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1", dest.display()));
                 WindowsInstaller::install_msi(&dest, &["ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1"]).await?;
-                log("PowerShell 7 安装完成！".into());
+                log(format!("PowerShell 7 ({}) 安装完成！", ver));
             }
 
             "windows_terminal" => {
@@ -317,39 +319,41 @@ impl InstallerEngine {
                     log("WinGet 渠道更新失败或已是最新，回退到国内 GitHub 离线包安装...".into());
                 }
 
-                let raw_url = "https://github.com/microsoft/terminal/releases/download/v1.25.2733.0/Microsoft.WindowsTerminal_1.25.2733.0_8wekyb3d8bbwe.msixbundle";
-                log(format!("正在根据配置解析 GitHub 下载源 (模式: {})...", mirror_config.github_mode));
-                let download_url = crate::network::mirrors::resolve_github_download_url(&client, raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
+                let ver = Detector::get_latest_version("windows_terminal").unwrap_or_else(|| "v1.25.2733.0".to_string());
+                let raw_ver = ver.trim_start_matches('v');
+                let raw_url = format!("https://github.com/microsoft/terminal/releases/download/{}/Microsoft.WindowsTerminal_{}_8wekyb3d8bbwe.msixbundle", ver, raw_ver);
+                log(format!("正在根据配置解析 Windows Terminal ({}) GitHub 下载源 (模式: {})...", ver, mirror_config.github_mode));
+                let download_url = crate::network::mirrors::resolve_github_download_url(&client, &raw_url, &mirror_config.github_mode, &mirror_config.github_mirror).await;
                 log(format!("选定加速下载链接: {}", download_url));
 
-                let dest = temp_dir.join("WindowsTerminal.msixbundle");
+                let dest = temp_dir.join(format!("WindowsTerminal_{}.msixbundle", raw_ver));
                 let tx_progress = event_sender.clone();
                 download_file(&client, &download_url, &dest, software_id, move |p| {
                     let _ = tx_progress.send(AppEvent::Progress(p));
                 })
                 .await?;
 
-                log("下载完成，正在静默部署 Windows Terminal AppX...".into());
+                log(format!("下载完成，正在静默部署 Windows Terminal ({}) AppX...", ver));
                 log(format!("$ powershell.exe -NoProfile -Command \"Add-AppxPackage -Path '{}'\"", dest.display()));
                 WindowsInstaller::install_appx(&dest).await?;
-                log("Windows Terminal 部署成功！".into());
+                log(format!("Windows Terminal ({}) 部署成功！", ver));
             }
-
             "nodejs" => {
-                let download_url = format!("{}/v20.18.0/node-v20.18.0-x64.msi", NODEJS_MIRROR_BASE);
-                log(format!("正在从阿里 Node.js 镜像高速下载: {}", download_url));
+                let ver = Detector::get_latest_version("nodejs").unwrap_or_else(|| "v24.22.0".to_string());
+                let download_url = format!("{}/{}/node-{}-x64.msi", NODEJS_MIRROR_BASE, ver, ver);
+                log(format!("正在从阿里 Node.js 镜像高速下载 {} LTS: {}", ver, download_url));
 
-                let dest = temp_dir.join("node-v20.18.0-x64.msi");
+                let dest = temp_dir.join(format!("node-{}-x64.msi", ver));
                 let tx_progress = event_sender.clone();
                 download_file(&client, &download_url, &dest, software_id, move |p| {
                     let _ = tx_progress.send(AppEvent::Progress(p));
                 })
                 .await?;
 
-                log("下载完成，正在后台静默安装 Node.js LTS...".into());
+                log(format!("下载完成，正在后台静默安装 Node.js LTS ({})...", ver));
                 log(format!("$ msiexec.exe /i \"{}\" /quiet /norestart", dest.display()));
                 WindowsInstaller::install_msi(&dest, &[]).await?;
-                log("Node.js LTS 安装成功！".into());
+                log(format!("Node.js LTS ({}) 安装成功！", ver));
             }
 
             "git" => {
@@ -543,15 +547,15 @@ impl InstallerEngine {
                     MacInstaller::brew_install_or_upgrade("node", log.clone()).await?;
                     log("Node.js LTS 安装成功！".into());
                 } else {
+                    let ver = Detector::get_latest_version("nodejs").unwrap_or_else(|| "v24.22.0".to_string());
                     let arch = crate::platform::mac_arch_label();
                     let file_name = if arch == "arm64" {
-                        "node-v20.18.0-arm64.pkg".to_string()
+                        format!("node-{}-arm64.pkg", ver)
                     } else {
-                        "node-v20.18.0.pkg".to_string()
+                        format!("node-{}.pkg", ver)
                     };
-                    let download_url = format!("{}/v20.18.0/{}", NODEJS_MIRROR_BASE, file_name);
-                    log(format!("未检测到 Homebrew，正在从阿里 npmmirror 镜像下载官方 PKG: {}", download_url));
-
+                    let download_url = format!("{}/{}/{}", NODEJS_MIRROR_BASE, ver, file_name);
+                    log(format!("未检测到 Homebrew，正在从阿里 npmmirror 镜像下载官方 PKG ({}): {}", ver, download_url));
                     let dest = temp_dir.join(&file_name);
                     let tx_progress = event_sender.clone();
                     download_file(&client, &download_url, &dest, software_id, move |p| {

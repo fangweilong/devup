@@ -293,17 +293,18 @@ impl Detector {
     }
 
     /// 联网并发拉取所有组件的官方最新版本，并更新内存缓存
-    /// 返回是否有任何组件的版本得到了更新
+    /// 返回 (是否有版本变更, 本次成功拉取到的版本列表[(id, version)])
     pub async fn fetch_latest_versions_online(
         client: &reqwest::Client,
         npm_registry: &str,
-    ) -> bool {
+    ) -> (bool, Vec<(String, String)>) {
         let mut updated = false;
+        let mut fetched_results = Vec::new();
         let clean_registry = npm_registry.trim_end_matches('/');
 
         let mut futs = Vec::new();
 
-        // 1. npm Agent 最新版本查询
+        // 1. npm Agent 最新版本查询 (通过 npm 镜像源)
         let npm_tasks = [
             ("claudecode", "@anthropic-ai/claude-code"),
             ("codex", "@openai/codex"),
@@ -317,7 +318,7 @@ impl Detector {
             futs.push(tokio::spawn(async move {
                 let res = client_c
                     .get(&url)
-                    .timeout(std::time::Duration::from_millis(3500))
+                    .timeout(std::time::Duration::from_millis(6000))
                     .send()
                     .await;
                 if let Ok(resp) = res {
@@ -328,7 +329,7 @@ impl Detector {
                             } else {
                                 format!("v{}", ver)
                             };
-                            return Some((id, formatted));
+                            return Some((id.to_string(), formatted));
                         }
                     }
                 }
@@ -343,7 +344,7 @@ impl Detector {
                 let url = "https://npmmirror.com/mirrors/node/index.json";
                 let res = client_c
                     .get(url)
-                    .timeout(std::time::Duration::from_millis(3500))
+                    .timeout(std::time::Duration::from_millis(6000))
                     .send()
                     .await;
                 if let Ok(resp) = res {
@@ -353,7 +354,7 @@ impl Detector {
                                 || item.get("lts").and_then(|v| v.as_str()).is_some();
                             if is_lts {
                                 if let Some(ver) = item.get("version").and_then(|v| v.as_str()) {
-                                    return Some(("nodejs", ver.to_string()));
+                                    return Some(("nodejs".to_string(), ver.to_string()));
                                 }
                             }
                         }
@@ -363,46 +364,71 @@ impl Detector {
             }));
         }
 
-        // 3. GitHub Releases 查询 (PowerShell, Git, Windows Terminal)
+        // 3. GitHub Releases 查询 (PowerShell, Git, Windows Terminal, Pi, Homebrew)
         let gh_repos = [
             ("powershell7", "PowerShell/PowerShell"),
             ("git", "git-for-windows/git"),
             ("windows_terminal", "microsoft/terminal"),
+            ("pi", "earendil-works/pi"),
+            ("homebrew", "Homebrew/brew"),
         ];
 
         for (id, repo) in gh_repos {
             let client_c = client.clone();
-            let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
             futs.push(tokio::spawn(async move {
+                // 优先通过 GitHub API 查询
+                let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
                 let res = client_c
-                    .get(&url)
+                    .get(&api_url)
                     .header("User-Agent", "DevUp-Client")
-                    .timeout(std::time::Duration::from_millis(3500))
+                    .timeout(std::time::Duration::from_millis(5000))
                     .send()
                     .await;
+
                 if let Ok(resp) = res {
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
                             let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
-                            return Some((id, clean_tag.to_string()));
+                            return Some((id.to_string(), clean_tag.to_string()));
                         }
                     }
                 }
+
+                // 兜底：通过 github.com releases/latest 302 重定向解析 tag
+                let page_url = format!("https://github.com/{}/releases/latest", repo);
+                if let Ok(resp) = client_c
+                    .get(&page_url)
+                    .header("User-Agent", "Mozilla/5.0")
+                    .timeout(std::time::Duration::from_millis(5000))
+                    .send()
+                    .await
+                {
+                    let final_url = resp.url().as_str();
+                    if let Some(idx) = final_url.rfind("/tag/") {
+                        let tag = &final_url[idx + "/tag/".len()..];
+                        let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
+                        if !clean_tag.is_empty() {
+                            return Some((id.to_string(), clean_tag.to_string()));
+                        }
+                    }
+                }
+
                 None
             }));
         }
 
         for f in futs {
             if let Ok(Some((id, ver))) = f.await {
-                let current = Self::get_latest_version(id);
+                let current = Self::get_latest_version(&id);
                 if current.as_deref() != Some(&ver) {
-                    Self::set_latest_version(id, ver);
+                    Self::set_latest_version(&id, ver.clone());
                     updated = true;
                 }
+                fetched_results.push((id, ver));
             }
         }
 
-        updated
+        (updated, fetched_results)
     }
 
     /// 检测一个 CLI 软件并组装状态卡片数据

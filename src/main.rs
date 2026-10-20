@@ -186,7 +186,19 @@ fn main() -> anyhow::Result<()> {
 
                         // 4. 并发联网拉取各组件官方最新版本并同步
                         if let Ok(client) = crate::network::downloader::create_http_client(proxy.as_deref()) {
-                            if Detector::fetch_latest_versions_online(&client, &npm_reg).await {
+                            let (updated, fetched_list) = Detector::fetch_latest_versions_online(&client, &npm_reg).await;
+                            if !fetched_list.is_empty() {
+                                let summary = fetched_list
+                                    .iter()
+                                    .map(|(id, v)| format!("{}: {}", id, v))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let _ = tx.send(AppEvent::Log {
+                                    target_id: "system".to_string(),
+                                    message: format!("🌐 官方最新版本已从远程实时同步: {}", summary),
+                                });
+                            }
+                            if updated {
                                 let refreshed = Detector::detect_all();
                                 let _ = tx.send(AppEvent::StatusList(refreshed));
                             }
@@ -376,7 +388,19 @@ fn main() -> anyhow::Result<()> {
         let tx_for_init = tokio_event_tx.clone();
         rt.spawn(async move {
             if let Ok(client) = crate::network::downloader::create_http_client(initial_proxy.as_deref()) {
-                if Detector::fetch_latest_versions_online(&client, &npm_reg).await {
+                let (updated, fetched_list) = Detector::fetch_latest_versions_online(&client, &npm_reg).await;
+                if !fetched_list.is_empty() {
+                    let summary = fetched_list
+                        .iter()
+                        .map(|(id, v)| format!("{}: {}", id, v))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = tx_for_init.send(AppEvent::Log {
+                        target_id: "system".to_string(),
+                        message: format!("🌐 官方最新版本已从远程实时同步: {}", summary),
+                    });
+                }
+                if updated {
                     let refreshed = Detector::detect_all();
                     let _ = tx_for_init.send(AppEvent::StatusList(refreshed));
                 }
