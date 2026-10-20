@@ -361,7 +361,7 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | C `node-guide` | ✅ 已完成 | `ba89d60` | 30 passed / 3 ignored、build 0 warning、`node --check` 通过、381 insertions + **0 deletions**（未跑 fmt 的硬证据）、只碰清单内 3 文件。**新增两处 `allow` 已并入 D 的清理判据**；`main.rs` 零改动即接通（派发是变体无关的 serde） |
 | D `node-guard` | ✅ 已完成 | `b442fdf` | 34 passed / 4 ignored、build 0 warning、四处 allow 全清（grep 只剩 `proxy.rs` / `updater.rs` 的既有项）、接入点均在下载之前、`detect()` 走 `spawn_blocking`；`node_source.rs` 被它带回 9 处 fmt hunk，已由主 agent 单独 rustfmt 复原为 0。**7 处偏离的裁定见 §9 台账** |
 | E `node-card` | ✅ 已完成 | `33ac30e` + `e61afc8` | 39 passed / 5 ignored、build 0 warning、`node --check` OK、`detect_all()` 每轮只取证一次；A7 现场实跑复现（GUI 模拟：`managed_by=nvm`、`installed=false`，不再报「未安装」）。两处返工见 R12/R13；R9 决定不动 `main.rs`；**R14 的前端组合无自动化覆盖，是 G 的走查项** |
-| F `node-uninstall` | 🔄 进行中 | 未提交 | 工作树由 `node-uninstall` 持有，见 §10 |
+| F `node-uninstall` | ✅ 已完成 | `b4ff86e` | 43 passed / 6 ignored、build 0 warning、只碰 `macos.rs` + `installer/mod.rs`（546 增 / 13 删，无格式化外溢）、`node_source.rs` 一字未动仍 0 fmt hunk。提权守卫已代码级确认：`removable.is_empty()` 早退，`run_admin_shell` 不可达。偏离裁定见 §9 R15–R18 |
 | G `node-verify` | ⏳ 待开 | — | |
 
 ## 9. 实现期裁定台账
@@ -384,8 +384,12 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | **R12**（E-③④） | `#[serde(default)]` 补上；`hasUpdate` 曾加 `!isManaged` | ①**采纳**；②**已撤回**（`e61afc8`） | ②的副作用是 E 自己上报的：托管 + 已装的卡片会掉到「卸载 + 重新安装」行，而托管机器上卸载同样被 G5 拒绝——在两个都不会执行的动作里挑一个，还把主行动藏了。现在 `hasUpdate` 原判定、`isManaged` 只管 badge 与 meta |
 | **R13**（E-⑤） | `version_key` 曾在 `env_check.rs` 复制一份 + 注释「改动须同步」 | **已去重**（`e61afc8`） | 复制是我「不许动 `node_source.rs`」这条硬约束逼出来的次优解，正解是导出：`node_source.rs` 只改 `fn` → `pub fn` 一行（**这是 G 收口 grep 时该认下来的授权破例**，不算越界），`env_check` 调 `node_source::version_key`。§2.2 警告的漂移风险就此消失 |
 | **R14**（E，遗留） | 「托管中 badge + 升级最新按钮」并存**是设计意图**，且这条组合没有任何自动化测试钉住 | **交给 G 的 GUI 走查** | JS 侧只有 C 那条读 `handleGuidance` 文本的契约测试覆盖前端；视觉复核时别当矛盾状态改回去。要长期防回归得给 `renderAll` 抽一层可测纯函数，不属 M0 范围 |
+| **R15**（F-①） | `pkg_removal_targets` 加了第三个参数 `resolve: impl Fn(&Path) -> Option<PathBuf>` | **采纳** | 我的规格同时要求「纯函数、不读 fs」与「按 canonical 目标判定」，这两条没有注入解就不可兼得，而「候选不在磁盘上也能判定」那条测试正是靠注入才成立。生产侧 `fs_canonical_target` 只做 `canonicalize` 读取 |
+| **R16**（F-②③④） | `remove_pkg_node_files` 返回 `Result<PkgRemoval{deleted,skipped,executed}>`；跳过项「逐项 log，只在全部挡住时出 `Guidance`」；「正在弹出系统授权框」日志移入真会弹的分支 | **采纳** | ③是对的：删了部分又跳了部分时卸载确实成功，这时出 Guidance 反而误导；④是诚实性修正，原来那句日志无条件打会对着「其实不弹框」的轮次撒谎 |
+| **R17**（F-⑤） | 全局包预告的触发面用「`npm_prefix` 与 `lib/node_modules` 双向包含」而非字面 `== /usr/local`，且要求该目录本次确被放行 | **采纳** | 字面判据会漏掉 prefix 落在其内的形态，也会在 prefix 指向 nvm 目录时误报（全局包不住在要删的地方）；`prefix=None`（npm 不可用/超时）不触发，符合「无证据不猜」 |
+| **R18**（F-⑥） | 改了 D 的 G6 PowerShell 模板：`-eq` / `StartsWith` → `[StringComparison]::Ordinal` | **采纳，属真实缺陷修复** | PS 默认是 culture-sensitive 比较，撇号/连字符在某些 culture 下按可忽略处理，会把只差标点的无关包判成托管方，全部判中时还会谎报「注册项全部指向管理器目录」。这是「第二套归一化规则」的实例，与 §9 R13 同类。**Windows 未验证**（无环境无 pwsh，纯静态推理），列进 A5/A6 补测 |
 
----
+> F 的一条方法论点值得留在台账里：本机 dump 显示 6 条候选**全部可删**（没有任何 `/usr/local` 路径链进 `~/.nvm`/`~/.volta`），而生产里 `pkg_receipt=false` 会让 G5 先拒绝——所以「本机跑不出跳过项」**不等于**「跳过逻辑验证过了」，跳过分支的证据只在合成 symlink 现场的表驱动单测里。它主动把这两层分开说了。
 
 ## 10. 交接（换设备继续时先读这一节）
 
@@ -400,11 +404,13 @@ DevUp 不会向该目录写入，也不会新增一份并行运行时来抢 PATH
 | C Guidance 通路 | `ba89d60` | `897958a` |
 | D 护栏 G1–G6 | `b442fdf` | `86404ec` |
 | E 卡片显示托管方 | `33ac30e`、`e61afc8` | `8d01736` |
+| F 卸载安全化 | `b4ff86e` | 与本节同批 |
 
-**基线数字**：`cargo test` = **39 passed / 5 ignored**、`cargo build` = **0 warning**、`node --check ui/app.js` 通过。新设备上先跑这三个确认环境一致（macOS；node 在 `~/.nvm/versions/node/v26.12.0/bin`）。
+**基线数字**（F 之后）：`cargo test` = **43 passed / 6 ignored**、`cargo build` = **0 warning**、`node --check ui/app.js` 通过；`node_source.rs` 的 `rustfmt --edition 2024 --check` 必须无输出。新设备上先跑这几个确认环境一致（macOS；node 在 `~/.nvm/versions/node/v26.12.0/bin`）。
 
-### F 的状态（重要）
-F 由子 agent `node-uninstall` 在本机执行中，**它的改动在工作树里、未提交**，进程和 diff 都不会跟着换设备。若在另一台机器继续：把工作树当空白，按下述规格重开一次 F（规格与本机进度无关，可独立复现）。
+### F 已完成（`b4ff86e`）——只剩 G
+下面这段是 F 的原规格，留作记录；它已全部落地，三处裁定见 §9 R15–R18。**G 需要知道的接口变化**：
+`MacInstaller::remove_pkg_node_files(&NodeEnv, &str, impl FnMut(String)) -> Result<PkgRemoval>`，`PkgRemoval { deleted, skipped, executed }`；`uninstall_target_macos("nodejs")` 对外契约不变（`Result<bool>`，`false` = 已出指引、**没弹框**、什么都没删）。`node_channel` 的 §2.2 口径问题 F 没碰，仍在原处。
 
 **F 的规格（三件事）**：
 1. **纯路径过滤**：新增 `pkg_removal_targets(&NodeEnv, &[PathBuf]) -> (可删, 因托管跳过)`，用 `node_source::path_key` + `is_within` 判断候选路径**自身或其 canonical 目标**是否落在任一 `manager.root` 内。核心用例是「候选在 `/usr/local/bin` 但符号链接指向 `~/.nvm/...` → 必须跳过」。`remove_pkg_node_files` 改为吃 `&NodeEnv`、动态拼 `rm -rf`，只删可删集合；**可删集合为空时不得调用 `run_admin_shell`**（那函数一调就弹 macOS 系统授权框，先弹框再解释是错的顺序）。
@@ -428,7 +434,9 @@ F 的禁区：不许真删文件、不许调用提权路径做"验证"、不碰 
 | 项 | 状态 |
 |---|---|
 | A3 装了 brew node 的 mac（`brew upgrade node` 应放行） | **待一台机器**。本机 `/opt/homebrew/bin` 与 `/usr/local/bin` 都没有 node，A1 端到端判别力受限 |
-| A5/A6 Windows nvm-windows + 裸 MSI | **待验**（按评审决定 M0 先发 macOS）。`cargo check --target x86_64-pc-windows-msvc` 卡在 `aws-lc-sys` 缺 Windows SDK，本机根本轮不到我们的 crate |
+| A5/A6 Windows nvm-windows + 裸 MSI | **待验**（按评审决定 M0 先发 macOS）。`cargo check --target x86_64-pc-windows-msvc` 卡在 `aws-lc-sys` 缺 Windows SDK，本机根本轮不到我们的 crate。F 又把 G6 模板的比较改成 `[StringComparison]::Ordinal`（R18），这条也压在 A5/A6 一起补 |
+| mac 卸载端到端 | **未验**。F 明确不跑 `run_admin_shell`（一调就弹系统授权框），所以「过滤后的脚本被授权框正确执行」与「可删集合为空时确实没弹框」都只有代码级证据（早退分支 + 表驱动单测），没有真机记录 |
+| 跳过分支的真机证据 | 本机 6 条候选全判可删（没有 `/usr/local` 路径链进管理器目录），且 `pkg_receipt=false` 让 G5 先拒绝——**「本机跑不出跳过项」不等于「跳过逻辑验证过了」**，证据只在合成 symlink 单测里 |
 | R8 设计稿遗留：MSI 遇 junction 的三种表现 | open。护栏不依赖是哪一种（一律拒写） |
 | G3 已知代价 | 装了 brew node 却被 nvm 遮蔽的机器，`brew upgrade` 会被拒绝一次。已写进 `g3_brew_install` 的 doc，不改 |
 | 前端「托管中 + 升级最新」组合 | 无自动化覆盖（R14），只靠 G 的走查 |
