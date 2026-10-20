@@ -15,6 +15,8 @@ let state = {
   pendingUninstallId: null,
   pendingAction: null,
   updateInfo: null,
+  // target_id -> 护栏指引（"未代为执行"的组件在卡片里挂横幅，随 renderAll 重建）
+  guidance: {},
 };
 
 function postCommand(cmd, payload = null) {
@@ -88,6 +90,8 @@ window.onEvent = function (event) {
       break;
 
     case "InstallSuccess":
+      // 这一轮真的执行完了，此前那条「未代为执行」的指引随即失效
+      delete state.guidance[event.data.target_id];
       appendLog(`✅ [${event.data.target_id}] 安装完成！`);
       state.activeTaskId = null;
       hideProgress();
@@ -101,6 +105,11 @@ window.onEvent = function (event) {
       state.activeTaskId = null;
       hideProgress();
       enableAllButtons();
+      break;
+
+    // 护栏拒绝：按设计没执行，不是失败，所以不进上面那条红字路径
+    case "Guidance":
+      handleGuidance(event.data);
       break;
 
     case "UpdateAvailable":
@@ -429,6 +438,183 @@ function appendLog(line) {
   const time = new Date().toLocaleTimeString();
   consoleEl.textContent += `[${time}] ${line}\n`;
   consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+// —— 护栏指引横幅（AppEvent::Guidance）———————————————————————
+// 拒绝执行是护栏按设计行事的结果，不是故障：横幅走中性/黄色样式，卡片状态不转红、
+// 不标失败，只让用户看清「DevUp 这次没有代跑」。横幅挂在对应卡片的详情区，
+// 不往底部控制台里塞 DOM —— 控制台靠 appendLog 的 textContent += 追加文本，
+// 任何子元素都会被下一条日志连带清掉。
+function handleGuidance(data) {
+  const targetId = data && data.target_id;
+  if (!targetId) return;
+
+  // 防御式落库：任务 D 可能只给 reason，commands 为空、note 为 null 都要照常渲染
+  state.guidance[targetId] = {
+    reason: data.reason || "DevUp 未对该组件执行本次操作。",
+    commands: Array.isArray(data.commands) ? data.commands.filter((c) => typeof c === "string" && c.trim()) : [],
+    note: data.note || null,
+  };
+
+  // 本轮到此为止：不清 activeTaskId 的话卡片按钮会一直停在「正在安装...」，
+  // 而护栏拒绝路径不会再来 InstallSuccess / InstallError 兜底
+  state.activeTaskId = null;
+  hideProgress();
+  appendLog(`ℹ️ [${targetId}] 未代为执行：${state.guidance[targetId].reason}`);
+  enableAllButtons(); // 内部即 renderAll，横幅随卡片一并重建
+}
+
+// 逐字段用 textContent 写入：命令文本来自后端，不能拼进 HTML 字符串
+function buildGuidanceBanner(guide) {
+  const banner = document.createElement("div");
+  banner.className = "guidance-banner";
+  banner.setAttribute("role", "note");
+
+  const head = document.createElement("div");
+  head.className = "guidance-head";
+  head.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>`;
+  const headTitle = document.createElement("span");
+  headTitle.className = "guidance-title";
+  headTitle.textContent = "DevUp 未代为执行";
+  head.appendChild(headTitle);
+  banner.appendChild(head);
+
+  const reason = document.createElement("div");
+  reason.className = "guidance-reason";
+  reason.textContent = guide.reason;
+  banner.appendChild(reason);
+
+  if (guide.commands.length) {
+    const list = document.createElement("div");
+    list.className = "guidance-cmds";
+
+    const label = document.createElement("div");
+    label.className = "guidance-cmds-label";
+    label.textContent = "请在你的终端执行：";
+    list.appendChild(label);
+
+    guide.commands.forEach((cmd) => {
+      const row = document.createElement("div");
+      row.className = "guidance-cmd-row";
+
+      const code = document.createElement("code");
+      code.className = "guidance-cmd";
+      code.textContent = cmd;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cmd-copy-btn guidance-copy-btn";
+      btn.dataset.cmd = cmd;
+      btn.title = "复制这条命令";
+      btn.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>`;
+      const btnLabel = document.createElement("span");
+      btnLabel.className = "guidance-copy-label";
+      btnLabel.textContent = "复制";
+      btn.appendChild(btnLabel);
+
+      row.appendChild(code);
+      row.appendChild(btn);
+      list.appendChild(row);
+    });
+    banner.appendChild(list);
+  }
+
+  if (guide.note) {
+    const note = document.createElement("div");
+    note.className = "guidance-note";
+    note.textContent = guide.note;
+    banner.appendChild(note);
+  }
+
+  return banner;
+}
+
+function attachGuidance(card) {
+  const guide = state.guidance[card.dataset.targetId];
+  if (!guide) return;
+  const footer = card.querySelector(".card-footer");
+  // 插在元信息之后、操作按钮之前：属于该组件自己的详情区，与其他卡片互不影响
+  card.insertBefore(buildGuidanceBanner(guide), footer);
+}
+
+// 与弹窗用的 fallbackCopy 同源，但要拿 execCommand 的返回值：
+// 复制到底成没成功决定下一级降级走不走，fallbackCopy 把它吞掉了
+function legacyCopyText(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (e) {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return !!ok;
+}
+
+// 最后一道兜底：文本进不了剪贴板就替用户选中，让他自己按复制键
+function selectElementText(el) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// wry 的 WebView 里 navigator.clipboard 未必可用（安全上下文 / 权限），execCommand
+// 也可能被静默拒绝，故三级降级：clipboard -> execCommand -> 选中文本。
+// 复制只影响按钮上的文案，横幅本身在任何分支都已渲染出来，不随复制结果变化。
+async function copyGuidanceCommand(btn) {
+  const cmd = btn.dataset.cmd || "";
+  const label = btn.querySelector(".guidance-copy-label");
+  const row = btn.parentElement;
+  const codeEl = row ? row.querySelector(".guidance-cmd") : null;
+  const feedback = (text) => {
+    if (!label) return;
+    label.textContent = text;
+    btn.classList.add("copied");
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      label.textContent = "复制";
+    }, 1500);
+  };
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(cmd);
+      feedback("已复制 ✓");
+      return;
+    }
+  } catch (e) {
+    // 有些 webview 里光是访问 clipboard 就会抛，落到下一级
+  }
+
+  if (legacyCopyText(cmd)) {
+    feedback("已复制 ✓");
+    return;
+  }
+  if (codeEl && selectElementText(codeEl)) {
+    feedback(isMac ? "已选中 · ⌘C" : "已选中 · Ctrl+C");
+    return;
+  }
+  feedback("可手动选中文本");
 }
 
 function updateProgress(data) {
@@ -979,6 +1165,8 @@ function renderAll() {
   state.softwares.forEach((item) => {
     const card = document.createElement("div");
     card.className = "card";
+    // 指引横幅按组件定位挂载点，卡片重建后仍能找回自己的那条
+    card.dataset.targetId = item.id;
 
     const isInstalled = item.installed;
     const hasUpdate = isInstalled && hasNewerVersion(item.version, item.latest_version);
@@ -1072,6 +1260,8 @@ function renderAll() {
       </div>
     `;
 
+    attachGuidance(card);
+
     if (item.category === "env") {
       envContainer.appendChild(card);
     } else {
@@ -1112,6 +1302,16 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // 代理与镜像配置弹窗
   document.getElementById("proxy-badge").addEventListener("click", openProxyModal);
+
+  // 卡片会被 renderAll 反复重建，复制按钮改用网格上的事件委托，避免重建后失绑
+  ["env-grid", "agent-grid"].forEach((gridId) => {
+    const grid = document.getElementById(gridId);
+    if (!grid) return;
+    grid.addEventListener("click", (e) => {
+      const btn = e.target.closest ? e.target.closest(".guidance-copy-btn") : null;
+      if (btn) copyGuidanceCommand(btn);
+    });
+  });
 
   // 弹窗内分类 Tab 切换
   document.querySelectorAll("#proxy-modal .modal-tab").forEach((tab) => {

@@ -719,6 +719,77 @@ main {
   transform: none !important;
 }
 
+/* 护栏指引横幅：语义是「按设计未代为执行」，因此取 --warning 的中性黄，
+   与 InstallError 的 --danger 红字彻底分开；复制按钮直接复用 .cmd-copy-btn。 */
+.guidance-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(210, 153, 34, 0.28);
+  border-left: 3px solid var(--warning);
+  background: rgba(210, 153, 34, 0.07);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.guidance-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.guidance-reason {
+  color: var(--text-main);
+}
+
+.guidance-cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.guidance-cmds-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.guidance-cmd-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* 全局 `* { user-select: none }` 会把文本选择一并禁掉，而「选中后手动复制」是
+   剪贴板 API 与 execCommand 都失败时的最后一级降级，这里必须显式放开。 */
+.guidance-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: #e2e8f0;
+  word-break: break-all;
+  user-select: text;
+  cursor: text;
+}
+
+.guidance-copy-btn {
+  flex: 0 0 auto;
+}
+
+.guidance-note {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
 /* 模态弹窗 */
 .modal-overlay {
   position: fixed;
