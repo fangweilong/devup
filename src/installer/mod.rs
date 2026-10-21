@@ -708,10 +708,17 @@ impl InstallerEngine {
                 // 「一个都没命中」不是成功：要么本就没装，要么全被护栏挡在管理器目录里，
                 // 两种情况用户需要知道差在哪，所以文案分开写。
                 let (reason, commands) = if owned == 0 {
-                    (
-                        "没有发现 Node.js 的 MSI / 程序注册项，DevUp 没有执行任何删除。".to_string(),
-                        Vec::new(),
-                    )
+                    if matches!(env.owner, NodeOwner::Manager(_)) || !env.managers.is_empty() {
+                        (
+                            "当前 Node.js 由版本管理器托管，DevUp 不代删托管方的 runtime，请在终端执行对应管理器的卸载命令：".to_string(),
+                            crate::detector::uninstall_hint_commands(&env),
+                        )
+                    } else {
+                        (
+                            "没有发现 Node.js 的 MSI / 程序注册项，DevUp 没有执行任何删除。".to_string(),
+                            Vec::new(),
+                        )
+                    }
                 } else {
                     (
                         format!(

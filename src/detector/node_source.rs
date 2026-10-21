@@ -260,7 +260,7 @@ impl ManagerKind {
             ManagerKind::Proto => &["proto remove node {ver}"],
             ManagerKind::N => &["n rm {ver}"],
             ManagerKind::Scoop => &["scoop uninstall nodejs-lts"],
-            ManagerKind::Nvs => &["nvs ls"],
+            ManagerKind::Nvs => &["nvs rm {ver}"],
         }
     }
 
@@ -860,12 +860,13 @@ fn g6_windows_uninstall(env: &NodeEnv) -> GuardDecision {
     if !env.nodejs_dir_is_reparse
         && !env.nvm_symlink_is_nodejs_dir
         && !system_dir_owned_by_manager(env)
+        && !matches!(env.owner, NodeOwner::Manager(_))
     {
         return GuardDecision::Allow;
     }
     refuse_uninstall(
         env,
-        "Node.js 的系统注册项指向版本管理器自己的目录，卸载它等于删掉托管方的 runtime，DevUp 不代删。",
+        "当前 Node.js 由版本管理器托管，DevUp 不代删托管方的 runtime，请使用对应版本管理器的卸载命令。",
     )
 }
 

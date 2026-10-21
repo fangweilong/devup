@@ -809,7 +809,14 @@ function getExecutionPlan(item, action) {
         const nodeVer = item.latest_version || "v24.22.0";
         if (isUninstall) {
           summary = "即将卸载 Node.js LTS 运行环境。";
-          if (isMac) {
+          if (item.managed_by) {
+            summary = `当前 Node.js 由 ${item.managed_by} 托管。`;
+            const currentVer = item.version ? item.version.replace(/^v/i, "") : "";
+            commands = currentVer
+              ? [`${item.managed_by} uninstall ${currentVer}`]
+              : [`${item.managed_by} uninstall`];
+            notes = "⚠️ 警告：检测到当前 Node.js 由版本管理器托管，DevUp 不代为删除，建议在终端中执行对应卸载命令。";
+          } else if (isMac) {
             // 预览必须与后端同构：brew 装的走 brew 自己的账本，只有官方 PKG 落点才动 /usr/local。
             // 0.3.6 起受版本管理器托管的机器会在护栏处被拒，根本执行不到这里。
             commands = [
