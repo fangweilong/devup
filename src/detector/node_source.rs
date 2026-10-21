@@ -58,7 +58,7 @@ const RC_MAX_BYTES: u64 = 512 * 1024;
 
 /// 机器上可能存在的 Node 版本管理器。`Nvm` 与 `NvmWindows` 是两个不同实现（目录结构、
 /// 生效方式、提权要求都不同），不能合成一个。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ManagerKind {
     Nvm,
     NvmWindows,
@@ -355,9 +355,23 @@ fn n_manager_root(prefix: &Path) -> PathBuf {
 /// Linux 上把管理器目录写成不同大小写的情况几乎不存在，而判宽的代价是「多认一份托管」，
 /// 方向与护栏的保守性一致（宁可少给功能，不可写坏别人目录）。
 pub fn path_key(p: &str) -> String {
-    let mut out = String::with_capacity(p.len());
+    let mut s = p.trim();
+    // 剥离 Windows 扩展长度 / 设备命名空间前缀（例如 \\?\C:\ 或 \??\C:\ 或 \\.\C:\）
+    if s.starts_with(r"\\?\UNC\") || s.starts_with("//?/UNC/") {
+        let rest = &s[8..];
+        return format!("//{}", path_key(rest));
+    } else if s.starts_with(r"\\?\")
+        || s.starts_with(r"\??\")
+        || s.starts_with(r"\\.\")
+        || s.starts_with("//?/")
+        || s.starts_with("/??/")
+        || s.starts_with("//./")
+    {
+        s = &s[4..];
+    }
+    let mut out = String::with_capacity(s.len());
     let mut prev_sep = false;
-    for ch in p.chars() {
+    for ch in s.chars() {
         let sep = ch == '/' || ch == '\\';
         if sep {
             // 连续分隔符只留一个，统一落成 `/`
@@ -374,6 +388,13 @@ pub fn path_key(p: &str) -> String {
     }
     while out.len() > 1 && out.ends_with('/') {
         out.pop();
+    }
+    if out.starts_with("/?/unc/") {
+        out = format!("/{}", &out[6..]);
+    } else if out.starts_with("/?/") || out.starts_with("/./") {
+        out = out[3..].to_string();
+    } else if out.starts_with("/??/") {
+        out = out[4..].to_string();
     }
     out
 }
@@ -521,7 +542,8 @@ fn pick_managed_versions(owner: NodeOwner, managers: &[Manager]) -> Vec<String> 
     match owner {
         NodeOwner::Manager(kind) => managers
             .iter()
-            .find(|m| m.kind == kind)
+            .find(|m| m.kind == kind && !m.versions.is_empty())
+            .or_else(|| managers.iter().find(|m| m.kind == kind))
             .map(|m| m.versions.clone())
             .unwrap_or_default(),
         _ => Vec::new(),
@@ -631,8 +653,10 @@ fn refuse_with(env: &NodeEnv, why: &str, commands: Vec<String>) -> GuardDecision
                 .to_string(),
         }
     } else {
+        let mut seen_kinds = std::collections::HashSet::new();
         let parts: Vec<String> = cs
             .iter()
+            .filter(|m| seen_kinds.insert(m.kind))
             .map(|m| {
                 let mut s = format!("{}（{}", m.kind.label(), m.root.display());
                 // 版本只给「生效那份归的那个」补：列别人的版本会把用户引向错误的托管方
@@ -767,12 +791,13 @@ fn g1_windows_msi(env: &NodeEnv) -> GuardDecision {
     if !env.nodejs_dir_is_reparse
         && !env.nvm_symlink_is_nodejs_dir
         && !system_dir_owned_by_manager(env)
+        && !matches!(env.owner, NodeOwner::Manager(_))
     {
         return GuardDecision::Allow;
     }
     refuse(
         env,
-        "C:\\Program Files\\nodejs 当前由版本管理器接管（是指向别处的链接），MSI 会写穿这份链接、毁掉 `nvm use` 的版本语义，所以 DevUp 不向这里写入。",
+        "当前系统由 Node 版本管理器接管，执行官方 MSI 会破坏版本管理器的生效环境并引入并行 runtime，所以 DevUp 不做该安装。",
     )
 }
 
@@ -942,7 +967,9 @@ pub fn guidance_preview(
 /// 不在此表的是 `NVM_SYMLINK`：它不是管理器数据目录，而是 nvm-windows 的链接落点，
 /// 单独作为 `nvm_symlink_is_nodejs_dir` 事实采集（G1 证据）。
 const ENV_MANAGER_KEYS: &[(&str, ManagerKind)] = &[
+    ("NVM_HOME", ManagerKind::NvmWindows),
     ("NVM_DIR", ManagerKind::Nvm),
+    ("NVS_HOME", ManagerKind::Nvs),
     ("FNM_DIR", ManagerKind::Fnm),
     ("FNM_MULTISHELL_PATH", ManagerKind::Fnm),
     ("VOLTA_HOME", ManagerKind::Volta),
@@ -1060,20 +1087,231 @@ fn common_known_dirs(home: &Path) -> Vec<(ManagerKind, PathBuf)> {
 /// 参与探测」，因为整段 cfg 掉会让 `ManagerKind::Nvs` 在 mac 构建里没有任何构造点，rustc 就报
 /// dead code —— 而本流水线不许用 `allow` 压这类警告（探测语义没有任何变化：非 Windows 依旧
 /// 返回空表，只是多构造两个随即丢弃的 PathBuf）。
+#[cfg(windows)]
+fn read_win_reg_env(k: &str) -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(env) = hkcu.open_subkey("Environment") {
+        if let Ok(val) = env.get_value::<String, _>(k) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Ok(env) =
+        hklm.open_subkey(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+    {
+        if let Ok(val) = env.get_value::<String, _>(k) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn read_win_reg_env(_k: &str) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn read_nvm_windows_registry_root() -> Option<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    if let Ok(key) = hkcu.open_subkey(r"Software\Author Software\Preferences\nvm") {
+        if let Ok(root) = key.get_value::<String, _>("InstallRoot") {
+            let trimmed = root.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+    }
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Ok(key) = hklm.open_subkey(r"Software\Author Software\Preferences\nvm") {
+        if let Ok(root) = key.get_value::<String, _>("InstallRoot") {
+            let trimmed = root.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn read_nvm_windows_registry_root() -> Option<PathBuf> {
+    None
+}
+
+fn read_nvm_settings_root(nvm_dir: &Path) -> Option<PathBuf> {
+    let settings_file = nvm_dir.join("settings.txt");
+    let content = std::fs::read_to_string(settings_file).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("root:") {
+            let root = rest.trim();
+            if !root.is_empty() {
+                return Some(PathBuf::from(root));
+            }
+        }
+    }
+    None
+}
+
 fn platform_known_dirs(home: &Path) -> Vec<(ManagerKind, PathBuf)> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    vec![
+    let mut dirs = vec![
         (
             ManagerKind::NvmWindows,
             home.join("AppData").join("Roaming").join("nvm"),
         ),
         (
+            ManagerKind::NvmWindows,
+            home.join("AppData")
+                .join("Local")
+                .join("Author Software")
+                .join("nvm"),
+        ),
+        (
+            ManagerKind::NvmWindows,
+            home.join("AppData").join("Local").join("nvm"),
+        ),
+        (
+            ManagerKind::NvmWindows,
+            PathBuf::from(r"C:\Program Files\nvm"),
+        ),
+        (
+            ManagerKind::Fnm,
+            home.join("AppData").join("Roaming").join("fnm"),
+        ),
+        (
+            ManagerKind::Fnm,
+            home.join("AppData").join("Local").join("fnm"),
+        ),
+        (
+            ManagerKind::Volta,
+            home.join("AppData").join("Local").join("Volta"),
+        ),
+        (
             ManagerKind::Nvs,
             home.join("AppData").join("Roaming").join("nvs"),
         ),
-    ]
+        (
+            ManagerKind::Nvs,
+            home.join("AppData").join("Local").join("nvs"),
+        ),
+        (ManagerKind::Nvs, PathBuf::from(r"C:\ProgramData\nvs")),
+        (
+            ManagerKind::Mise,
+            home.join("AppData").join("Local").join("mise"),
+        ),
+    ];
+    if let Some(install_root) = read_nvm_windows_registry_root() {
+        dirs.push((ManagerKind::NvmWindows, install_root));
+    }
+
+    let mut extra = Vec::new();
+    for (kind, dir) in &dirs {
+        if *kind == ManagerKind::NvmWindows {
+            if let Some(custom_root) = read_nvm_settings_root(dir) {
+                extra.push((ManagerKind::NvmWindows, custom_root));
+            }
+        }
+    }
+    dirs.extend(extra);
+
+    dirs
+}
+
+#[cfg(windows)]
+fn managers_from_windows_registry() -> Vec<Manager> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let mut out = Vec::new();
+
+    if let Some(install_root) = read_nvm_windows_registry_root() {
+        if install_root.is_dir() {
+            out.push(Manager::new(ManagerKind::NvmWindows, install_root));
+        }
+    }
+
+    let roots = [
+        (
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+    ];
+
+    for (hkey, subkey_path) in roots {
+        let base = RegKey::predef(hkey);
+        let Ok(uninstall_key) = base.open_subkey(subkey_path) else {
+            continue;
+        };
+        for name in uninstall_key.enum_keys().flatten() {
+            let Ok(sub) = uninstall_key.open_subkey(&name) else {
+                continue;
+            };
+            let display_name: String = sub.get_value("DisplayName").unwrap_or_default();
+            let install_loc: String = sub.get_value("InstallLocation").unwrap_or_default();
+            let trimmed_loc = install_loc.trim();
+            if trimmed_loc.is_empty() {
+                continue;
+            }
+            let loc_path = PathBuf::from(trimmed_loc);
+            if !loc_path.is_dir() {
+                continue;
+            }
+
+            let lower_name = display_name.to_lowercase();
+            if lower_name.contains("nvm") {
+                out.push(Manager::new(ManagerKind::NvmWindows, loc_path));
+            } else if lower_name.contains("fnm") {
+                out.push(Manager::new(ManagerKind::Fnm, loc_path));
+            } else if lower_name.contains("volta") {
+                out.push(Manager::new(ManagerKind::Volta, loc_path));
+            }
+        }
+    }
+
+    out
+}
+
+#[cfg(not(windows))]
+fn managers_from_windows_registry() -> Vec<Manager> {
+    Vec::new()
+}
+
+fn expand_nvm_settings(managers: &[Manager]) -> Vec<Manager> {
+    let mut extra = Vec::new();
+    for m in managers {
+        if m.kind == ManagerKind::NvmWindows {
+            if let Some(custom_root) = read_nvm_settings_root(&m.root) {
+                if custom_root.is_dir() && custom_root != m.root {
+                    extra.push(Manager::new(ManagerKind::NvmWindows, custom_root));
+                }
+            }
+        }
+    }
+    extra
 }
 
 /// rc 匹配表：`(片段, kind, 是否从同一行取路径)`。
@@ -1218,28 +1456,17 @@ pub fn scan_shell_rc(home: &Path) -> Vec<Manager> {
 // 采集：node 本体 / 子进程事实
 // ---------------------------------------------------------------------------
 
-/// Unix：复用 `platform::which`（其顺序已与 `child_path()` 一致，用户 PATH 优先）。
-/// Windows：本模块不改动 `platform.rs`，而 `platform::which` 只有 unix 实现，
-/// 因此这里用 `where.exe` 自取一条（与 `Detector::check_command_windows` 同思路）。
-///
-/// **Windows 分支本机未验证**（无 Windows 环境）。
-#[cfg(unix)]
-fn find_active_node() -> Option<PathBuf> {
-    crate::platform::which("node")
-}
-
 #[cfg(windows)]
-fn find_active_node() -> Option<PathBuf> {
+fn which_in_child_path(cmd: &str) -> Option<PathBuf> {
     let child_path = crate::platform::child_path();
-    let mut cmd = Command::new("where.exe");
-    cmd.arg("node.exe");
-    cmd.env("PATH", &child_path);
-    cmd.creation_flags(crate::detector::CREATE_NO_WINDOW);
-    let out = cmd.output().ok()?;
+    let mut c = Command::new("where.exe");
+    c.arg(cmd);
+    c.env("PATH", &child_path);
+    c.creation_flags(crate::detector::CREATE_NO_WINDOW);
+    let out = c.output().ok()?;
     if !out.status.success() {
         return None;
     }
-    // 先把 Cow 绑定下来再取行：在一行表达式里从临时值借出 &str 会超出临时值存活范围
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text
         .lines()
@@ -1247,6 +1474,108 @@ fn find_active_node() -> Option<PathBuf> {
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
     Some(PathBuf::from(line))
+}
+
+#[cfg(unix)]
+fn which_in_child_path(cmd: &str) -> Option<PathBuf> {
+    crate::platform::which(cmd)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn which_in_child_path(_cmd: &str) -> Option<PathBuf> {
+    None
+}
+
+fn find_active_node() -> Option<PathBuf> {
+    which_in_child_path("node").or_else(|| which_in_child_path("node.exe"))
+}
+
+fn managers_from_path() -> Vec<Manager> {
+    let tools: &[(&str, ManagerKind)] = &[
+        (
+            "nvm",
+            if cfg!(windows) {
+                ManagerKind::NvmWindows
+            } else {
+                ManagerKind::Nvm
+            },
+        ),
+        ("fnm", ManagerKind::Fnm),
+        ("volta", ManagerKind::Volta),
+        ("nvs", ManagerKind::Nvs),
+        ("mise", ManagerKind::Mise),
+        ("proto", ManagerKind::Proto),
+        ("scoop", ManagerKind::Scoop),
+    ];
+    let mut out = Vec::new();
+    for (tool, kind) in tools {
+        let found = which_in_child_path(tool).or_else(|| {
+            if cfg!(windows) {
+                which_in_child_path(&format!("{tool}.exe"))
+                    .or_else(|| which_in_child_path(&format!("{tool}.cmd")))
+            } else {
+                None
+            }
+        });
+        if let Some(path) = found {
+            if let Some(parent) = path.parent() {
+                out.push(Manager::new(*kind, parent.to_path_buf()));
+            }
+        }
+    }
+    out
+}
+
+fn managers_from_active_node(active_node: &Path) -> Vec<Manager> {
+    let mut out = Vec::new();
+    let mut current = active_node.parent();
+    while let Some(dir) = current {
+        // 1. 检查目录下是否包含管理器可执行文件或特征配置
+        if dir.join("nvm.exe").is_file()
+            || dir.join("NVMWindows.Events.dll").is_file()
+            || dir.join("settings.txt").is_file()
+        {
+            out.push(Manager::new(ManagerKind::NvmWindows, dir.to_path_buf()));
+        }
+        if dir.join("fnm.exe").is_file()
+            || dir.file_name().and_then(|n| n.to_str()) == Some("node-versions")
+        {
+            let root = if dir.file_name().and_then(|n| n.to_str()) == Some("node-versions") {
+                dir.parent().unwrap_or(dir).to_path_buf()
+            } else {
+                dir.to_path_buf()
+            };
+            out.push(Manager::new(ManagerKind::Fnm, root));
+        }
+        if dir.join("volta.exe").is_file()
+            || dir.file_name().and_then(|n| n.to_str()) == Some(".volta")
+        {
+            out.push(Manager::new(ManagerKind::Volta, dir.to_path_buf()));
+        }
+        if dir.join("nvs.cmd").is_file() || dir.join("nvs.exe").is_file() {
+            out.push(Manager::new(ManagerKind::Nvs, dir.to_path_buf()));
+        }
+
+        // 2. 检查该目录是否是形如 vX.Y.Z 的版本目录，其父目录是否包含多个版本
+        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+            if clean_version_name(name).is_some() {
+                if let Some(parent) = dir.parent() {
+                    let versions = list_version_dirs(parent);
+                    if !versions.is_empty() {
+                        let kind = if cfg!(windows) {
+                            ManagerKind::NvmWindows
+                        } else {
+                            ManagerKind::Nvm
+                        };
+                        out.push(Manager::new(kind, parent.to_path_buf()));
+                    }
+                }
+            }
+        }
+
+        current = dir.parent();
+    }
+    out
 }
 
 /// canonicalize 是为了穿透 symlink/junction：Windows 上 nvm 的 `Program Files\nodejs`
@@ -1394,6 +1723,8 @@ fn read_windows_nodejs_facts() -> (bool, bool) {
         Err(_) => false,
     };
     let symlink_hit = std::env::var("NVM_SYMLINK")
+        .ok()
+        .or_else(|| read_win_reg_env("NVM_SYMLINK"))
         .map(|v| !v.trim().is_empty() && same_path(v.trim(), NODEJS_DIR_WINDOWS))
         .unwrap_or(false);
     (is_reparse, symlink_hit)
@@ -1424,10 +1755,30 @@ fn attach_versions(managers: Vec<Manager>) -> Vec<Manager> {
 }
 
 fn manager_versions(kind: ManagerKind, root: &Path) -> Vec<String> {
-    let Some(dir) = kind.version_dir(root) else {
-        return Vec::new();
-    };
-    let mut vs = list_version_dirs(&dir);
+    let mut dirs_to_scan = Vec::new();
+    if let Some(dir) = kind.version_dir(root) {
+        dirs_to_scan.push(dir);
+    }
+    if kind == ManagerKind::NvmWindows {
+        if let Some(settings_root) = read_nvm_settings_root(root) {
+            if settings_root != root {
+                dirs_to_scan.push(settings_root);
+            }
+        }
+        let versions_subdir = root.join("versions");
+        if versions_subdir.is_dir() {
+            dirs_to_scan.push(versions_subdir);
+        }
+        if let Some(reg_root) = read_nvm_windows_registry_root() {
+            if reg_root != root {
+                dirs_to_scan.push(reg_root);
+            }
+        }
+    }
+    let mut vs = Vec::new();
+    for dir in dirs_to_scan {
+        vs.extend(list_version_dirs(&dir));
+    }
     sort_versions_desc(&mut vs);
     vs
 }
@@ -1449,14 +1800,32 @@ fn list_version_dirs(dir: &Path) -> Vec<String> {
     out
 }
 
-/// 按 kind 去重，保留首次出现（调用方按 env -> 目录 -> rc 的可靠度顺序喂进来）。
-/// `dedup_by` 只清连续重复，这里要的是跨条目去重，手写更直白。
 fn dedup_kinds(ms: Vec<Manager>) -> Vec<Manager> {
     let mut out: Vec<Manager> = Vec::with_capacity(ms.len());
     for m in ms {
-        if !out.iter().any(|e| e.kind == m.kind) {
-            out.push(m);
+        let m_key = path_key(&m.root.to_string_lossy());
+        // 如果已有相同 kind 且涵盖该路径（同一路径或其祖先目录），跳过
+        let dominated = out.iter().any(|e| {
+            if e.kind != m.kind {
+                return false;
+            }
+            let e_key = path_key(&e.root.to_string_lossy());
+            is_within(&m_key, &e_key)
+        });
+        if dominated {
+            continue;
         }
+
+        // 如果新根目录涵盖了已存在的子目录，剔除被涵盖的子目录
+        out.retain(|e| {
+            if e.kind != m.kind {
+                return true;
+            }
+            let e_key = path_key(&e.root.to_string_lossy());
+            !is_within(&e_key, &m_key)
+        });
+
+        out.push(m);
     }
     out
 }
@@ -1468,18 +1837,42 @@ fn dedup_kinds(ms: Vec<Manager>) -> Vec<Manager> {
 pub fn detect() -> NodeEnv {
     let home = crate::platform::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
-    // 1. 环境变量（从终端启动 DevUp 时最可靠）
-    let env_lookup = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    // 1. 环境变量（从终端启动 DevUp 时最可靠，含注册表环境兜底）
+    let env_lookup = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| read_win_reg_env(k))
+    };
     let mut managers = managers_from_env_with(&home, cfg!(windows), env_lookup);
-    // 2. 已知目录（Finder 启动时 env 全空，这一路是唯一证据）
+
+    // 2. PATH 动态查找（识别用户安装到任意自定义目录中的 nvm/fnm/volta/mise 等）
+    managers.extend(managers_from_path());
+
+    // 3. Windows 标准注册表安装登记项（Uninstall 键中的 InstallLocation）
+    managers.extend(managers_from_windows_registry());
+
+    // 4. 已知默认目录兜底
     managers.extend(managers_from_dirs_with(&home, |p| p.is_dir()));
-    // 3. shell rc 文本（识破 GUI 看不见的 nvm 激活）
+
+    // 5. shell rc 文本
     managers.extend(scan_shell_rc(&home));
-    // 去重后再列版本：同一 kind 被三路信号都认到时只该列一次目录
+
+    // 6. 查找当前生效的 node
+    let active_node = find_active_node().map(|p| resolve_real(&p));
+
+    // 7. 从 active_node 的祖先路径动态反推管理器与版本根目录（针对免安装/自定义目录）
+    if let Some(node) = active_node.as_deref() {
+        managers.extend(managers_from_active_node(node));
+    }
+
+    // 8. 针对已发现的所有 nvm-windows 实例，动态解析其 settings.txt 中的自定义 root
+    managers.extend(expand_nvm_settings(&managers));
+
+    // 去重后再列版本
     let managers = attach_versions(dedup_kinds(managers));
 
-    // 4. 归属判定
-    let active_node = find_active_node().map(|p| resolve_real(&p));
+    // 9. 归属判定
     let version = active_node.as_deref().and_then(read_node_version);
     let npm_prefix = read_npm_prefix(active_node.as_deref());
     let (nodejs_dir_is_reparse, nvm_symlink_is_nodejs_dir) = read_windows_nodejs_facts();
@@ -1853,6 +2246,20 @@ mod tests {
                 want_within: false,
                 want_same: false,
             },
+            Case {
+                name: "Windows verbatim \\?\\ 路径与普通路径归一化后视为同一位置",
+                a: "\\\\?\\C:\\Program Files\\nodejs\\node.exe",
+                b: "c:/program files/nodejs/node.exe",
+                want_within: true,
+                want_same: true,
+            },
+            Case {
+                name: "Windows NT \\??\\ 命名空间路径与普通路径归一化后视为同一位置",
+                a: "\\??\\C:\\Users\\u\\AppData\\Local\\Author Software\\nvm\\.shim\\node.exe",
+                b: "C:\\Users\\u\\AppData\\Local\\Author Software\\nvm",
+                want_within: true,
+                want_same: false,
+            },
         ];
         for c in cases {
             assert_eq!(
@@ -2024,6 +2431,20 @@ mod tests {
                 "C:\\Users\\u\\AppData\\Roaming\\nvm",
             ),
             ("NVM_SYMLINK", "C:\\Program Files\\nodejs", true, None, ""),
+            (
+                "NVM_HOME",
+                "C:\\Users\\u\\AppData\\Local\\Author Software\\nvm",
+                true,
+                Some(ManagerKind::NvmWindows),
+                "C:\\Users\\u\\AppData\\Local\\Author Software\\nvm",
+            ),
+            (
+                "NVS_HOME",
+                "C:\\Users\\u\\AppData\\Local\\nvs",
+                true,
+                Some(ManagerKind::Nvs),
+                "C:\\Users\\u\\AppData\\Local\\nvs",
+            ),
             (
                 "VOLTA_HOME",
                 "/Users/u/.volta",

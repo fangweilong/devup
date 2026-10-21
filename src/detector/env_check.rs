@@ -300,7 +300,8 @@ impl Detector {
             // owner 命中那一个：只报它自己的版本，别的管理器一个字符都不许混进来
             node_source::NodeOwner::Manager(kind) => managers
                 .iter()
-                .find(|m| m.kind == kind)
+                .find(|m| m.kind == kind && !m.versions.is_empty())
+                .or_else(|| managers.iter().find(|m| m.kind == kind))
                 .map(|m| (m.kind.label(), m.versions.clone())),
             // GUI 解析不到 node（nvm-only 机器从 Finder 启动的常态）或归属不明：
             // 主托管方 = 自己装了最高语义版本的那一个；一个版本都没有就退回清单第一个
