@@ -408,6 +408,7 @@ impl Detector {
             "pi" => Some("v1.3.0"),
             "oh-my-pi" => Some("v18.12.2"),
             "opencode" => Some("v2.0.32"),
+            "antigravity" => Some("v1.4.6"),
             _ => None,
         }
     }
@@ -491,6 +492,7 @@ impl Detector {
             ("windows_terminal", "microsoft/terminal"),
             ("pi", "earendil-works/pi"),
             ("homebrew", "Homebrew/brew"),
+            ("antigravity", "google-antigravity/antigravity-cli"),
         ];
 
         for (id, repo) in gh_repos {
@@ -520,6 +522,21 @@ impl Detector {
                                         Self::set_latest_version("powershell_download_url", url.to_string());
                                     } else if id == "windows_terminal" && name.ends_with(".msixbundle") && !name.contains("PreinstallKit") {
                                         Self::set_latest_version("windows_terminal_download_url", url.to_string());
+                                    } else if id == "antigravity"
+                                        && matches!(
+                                            name,
+                                            "agy_cli_windows_x64.zip"
+                                                | "agy_cli_windows_arm64.zip"
+                                                | "agy_cli_mac_arm64.tar.gz"
+                                                | "agy_cli_mac_x64.tar.gz"
+                                        )
+                                    {
+                                        // 按资产名分 key 缓存：安装侧按本机平台/架构取对应直链，
+                                        // release 改了资产命名时这里先失配、回退到按 tag 拼 URL
+                                        Self::set_latest_version(
+                                            &format!("antigravity_download_url:{}", name),
+                                            url.to_string(),
+                                        );
                                     }
                                 }
                             }
@@ -793,6 +810,17 @@ impl Detector {
             "opencode",
             "npm",
             "官方CLI自升级 / npmmirror",
+        ));
+
+        list.push(Self::probe_software(
+            "antigravity",
+            "Antigravity CLI",
+            "agent",
+            "Google 官方终端 Coding Agent（Go 原生二进制，不依赖 Node.js）".into(),
+            "https://github.com/google-antigravity/antigravity-cli",
+            "agy",
+            "native_cli",
+            "官方 GitHub Release / 自动更新",
         ));
 
         // Agent 的 npm 前置：与 `InstallerEngine::agent_preflight` 同一判定函数，

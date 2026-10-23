@@ -30,7 +30,9 @@ struct AgentSpec {
     /// 已安装时优先调用的原生更新命令（None 表示仅 npm 渠道）
     cli: Option<&'static str>,
     update_args: &'static [&'static str],
-    npm_pkg: &'static str,
+    /// npm 全局包名。`None` = 原生二进制分发的 Agent，**完全不依赖 Node/npm**：
+    /// 安装前的前置检测与指引一律跳过（缺 node 不是它的故障）。
+    npm_pkg: Option<&'static str>,
     done_msg: &'static str,
 }
 
@@ -40,36 +42,44 @@ fn agent_spec(software_id: &str) -> Option<AgentSpec> {
             label: "Claude Code",
             cli: Some("claude"),
             update_args: &["update"],
-            npm_pkg: "@anthropic-ai/claude-code",
+            npm_pkg: Some("@anthropic-ai/claude-code"),
             done_msg: "Claude Code 全局安装完成！直接在终端输入 `claude` 即可启动。",
         },
         "codex" => AgentSpec {
             label: "OpenAI Codex",
             cli: None,
             update_args: &[],
-            npm_pkg: "@openai/codex",
+            npm_pkg: Some("@openai/codex"),
             done_msg: "OpenAI Codex 全局安装完成！直接在终端输入 `codex` 即可启动。",
         },
         "pi" => AgentSpec {
             label: "Pi",
             cli: Some("pi"),
             update_args: &["update"],
-            npm_pkg: "@earendil-works/pi",
+            npm_pkg: Some("@earendil-works/pi"),
             done_msg: "Pi Agent 安装成功！终端输入 `pi` 即可使用。",
         },
         "oh-my-pi" => AgentSpec {
             label: "omp",
             cli: Some("omp"),
             update_args: &["update"],
-            npm_pkg: "@oh-my-pi/pi-coding-agent",
+            npm_pkg: Some("@oh-my-pi/pi-coding-agent"),
             done_msg: "oh-my-pi (omp) 安装成功！",
         },
         "opencode" => AgentSpec {
             label: "OpenCode",
             cli: Some("opencode"),
             update_args: &["upgrade"],
-            npm_pkg: "@opencode/cli",
+            npm_pkg: Some("@opencode/cli"),
             done_msg: "OpenCode 安装成功！",
+        },
+        "antigravity" => AgentSpec {
+            label: "Antigravity CLI",
+            cli: Some("agy"),
+            update_args: &["update"],
+            // Go 原生二进制，自带 `agy update`：不走 npm，也不参与缺 Node 的前置拦截
+            npm_pkg: None,
+            done_msg: "Antigravity CLI 安装完成！终端输入 `agy` 即可启动。",
         },
         _ => return None,
     };
@@ -109,6 +119,8 @@ pub(crate) fn agent_npm_guidance(
     npm_available: bool,
 ) -> Option<Guidance> {
     let spec = agent_spec(software_id)?;
+    // 原生二进制 Agent（如 Antigravity CLI）没有 npm 依赖：缺 node 与它无关，直接放行
+    let npm_pkg = spec.npm_pkg?;
     if npm_available || env.active_node.is_some() || !env.managers.is_empty() {
         return None;
     }
@@ -120,12 +132,39 @@ pub(crate) fn agent_npm_guidance(
             "{} 通过 npm 全局包安装与升级，本机未检测到可用的 node 与 npm。",
             spec.label
         ),
-        commands: vec![format!("npm install -g {}", spec.npm_pkg)],
+        commands: vec![format!("npm install -g {}", npm_pkg)],
         note: Some(format!(
             "先安装 Node.js（本页「Node.js (LTS)」卡片），装完后再安装 {}。",
             spec.label
         )),
     })
+}
+
+/// Antigravity CLI 的 GitHub Release 资产名。官方 tag 形如 `1.4.6`（无 `v` 前缀），
+/// 资产按平台/架构分：`agy_cli_windows_x64.zip`、`agy_cli_mac_arm64.tar.gz` 等。
+fn antigravity_asset(platform: &str, arch: &str) -> &'static str {
+    match (platform, arch) {
+        ("windows", "arm64") => "agy_cli_windows_arm64.zip",
+        ("windows", _) => "agy_cli_windows_x64.zip",
+        ("macos", "arm64") => "agy_cli_mac_arm64.tar.gz",
+        ("macos", _) => "agy_cli_mac_x64.tar.gz",
+        _ => "agy_cli_linux_x64.tar.gz",
+    }
+}
+
+/// 资产直链：优先用联网探测缓存下来的真实 assets 链接（release 改名也能跟上），
+/// 否则按已缓存 tag 拼官方地址。tag 统一去掉 `v` 前缀——GitHub 上这个仓库不打 `v`。
+fn antigravity_download_url(platform: &str, arch: &str) -> String {
+    let asset = antigravity_asset(platform, arch);
+    if let Some(url) = Detector::get_latest_version(&format!("antigravity_download_url:{asset}")) {
+        return url;
+    }
+    let tag = Detector::get_latest_version("antigravity").unwrap_or_else(|| "v1.4.6".to_string());
+    format!(
+        "https://github.com/google-antigravity/antigravity-cli/releases/download/{}/{}",
+        tag.trim_start_matches('v'),
+        asset
+    )
 }
 
 impl InstallerEngine {
@@ -136,6 +175,8 @@ impl InstallerEngine {
     /// 才进 `spawn_blocking`；探测本身失败时按「照旧执行」处理（不因为我们的故障就拦）。
     async fn agent_preflight(software_id: &str) -> Option<Guidance> {
         let spec = agent_spec(software_id)?;
+        // 不依赖 npm 的 Agent 一次探测都不做（缺 node 不是它们的前置条件）
+        spec.npm_pkg?;
         let cli_available = match spec.cli {
             Some(cli) => Detector::check_command(cli, "--version").0,
             None => false,
@@ -145,6 +186,156 @@ impl InstallerEngine {
         }
         let env = tokio::task::spawn_blocking(detect).await.ok()?;
         agent_npm_guidance(software_id, &env, cli_available, false)
+    }
+
+    /// Antigravity CLI（Windows）：下载官方 release 资产并解压到 `%LOCALAPPDATA%\agy\bin`，
+    /// 幂等追加用户 PATH（不碰系统 PATH），最后刷新本进程 PATH 让同轮检测能看见 `agy`。
+    ///
+    /// 为什么不跑 `irm https://antigravity.google/cli/install.ps1 | iex`：那条链路不走
+    /// GitHub 镜像加速，国内基本不可达；DevUp 的下载器与多源竞速才是这里的价值。
+    #[cfg(windows)]
+    async fn install_antigravity_windows(
+        proxy_url: Option<&str>,
+        mirror_config: &crate::config::MirrorConfig,
+        event_sender: &UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let software_id = "antigravity";
+        let log = Self::make_log(event_sender, software_id);
+        let client = create_http_client(proxy_url)?;
+        let temp_dir = std::env::temp_dir().join("devup-cache");
+        tokio::fs::create_dir_all(&temp_dir).await?;
+
+        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+        let raw_url = antigravity_download_url("windows", arch);
+        log(format!(
+            "正在解析 Antigravity CLI 下载源 (模式: {})...",
+            mirror_config.github_mode
+        ));
+        let download_url = crate::network::mirrors::resolve_github_download_url(
+            &client,
+            &raw_url,
+            &mirror_config.github_mode,
+            &mirror_config.github_mirror,
+        )
+        .await;
+        log(format!("选定加速下载链接: {}", download_url));
+
+        let dest = temp_dir.join("agy_cli_windows.zip");
+        let tx_progress = event_sender.clone();
+        download_file(&client, &download_url, &dest, software_id, move |p| {
+            let _ = tx_progress.send(AppEvent::Progress(p));
+        })
+        .await?;
+
+        log("下载完成，正在解压并写入用户 PATH（%LOCALAPPDATA%\\agy\\bin）...".into());
+        // 单条 -Command：解压 → 找发行二进制 → 覆盖安装 → 幂等追加用户 PATH。
+        // 解压用系统自带 `tar.exe` 而不是 `Expand-Archive`：后者的 Archive 模块在部分
+        // 机器上自加载失败（本机 5.1 实测报 ModuleNotFound），tar 是 Win10 1803+ 自带、
+        // 无模块依赖，且同一个命令还能解 tar.gz。
+        // 发行包里的可执行文件名是 `antigravity.exe`（官方安装脚本会改名成 `agy.exe`），
+        // 两个名字都认，最终统一落成 `agy.exe`。
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $dest=Join-Path $env:LOCALAPPDATA 'agy\\bin'; \
+             New-Item -ItemType Directory -Force -Path $dest | Out-Null; \
+             $tmp=Join-Path $env:TEMP 'devup-agy-extract'; \
+             if (Test-Path $tmp) {{ Remove-Item -Recurse -Force $tmp }}; \
+             New-Item -ItemType Directory -Force -Path $tmp | Out-Null; \
+             & tar.exe -xf '{}' -C $tmp; \
+             $exe=Get-ChildItem -Path $tmp -Recurse -Include 'antigravity.exe','agy.exe' | Select-Object -First 1; \
+             if (-not $exe) {{ throw 'agy release 包里没有 agy/antigravity 可执行文件' }}; \
+             $target=Join-Path $dest 'agy.exe'; \
+             if (Test-Path -LiteralPath $target) {{ Move-Item -Force -LiteralPath $target -Destination ($target + '.' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + '.old') }}; \
+             Copy-Item -LiteralPath $exe.FullName -Destination $target -Force; \
+             $userPath=[Environment]::GetEnvironmentVariable('Path','User'); \
+             $parts=@($userPath -split ';' | Where-Object {{ $_ -ne '' }}); \
+             if (-not ($parts | Where-Object {{ $_.TrimEnd('\\') -ieq $dest }})) {{ [Environment]::SetEnvironmentVariable('Path', (($parts + $dest) -join ';'), 'User') }}",
+            dest.display()
+        );
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.creation_flags(0x08000000);
+        cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]);
+        let out = cmd.output().await?;
+        if !out.status.success() {
+            bail!(
+                "Antigravity CLI 解压安装失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+
+        // 进程级 PATH 刷新：同轮 `Refresh` 就能看到 agy，不必让用户重开 DevUp
+        crate::platform::refresh_process_path();
+        log("Antigravity CLI 安装完成！终端输入 `agy` 即可启动。".into());
+        Ok(())
+    }
+
+    /// Antigravity CLI（macOS）：同一条 GitHub 资产链路，落点 `~/.local/bin/agy`。
+    #[cfg(target_os = "macos")]
+    async fn install_antigravity_macos(
+        proxy_url: Option<&str>,
+        mirror_config: &crate::config::MirrorConfig,
+        event_sender: &UnboundedSender<AppEvent>,
+    ) -> Result<()> {
+        let software_id = "antigravity";
+        let log = Self::make_log(event_sender, software_id);
+        let client = create_http_client(proxy_url)?;
+        let temp_dir = std::env::temp_dir().join("devup-cache");
+        tokio::fs::create_dir_all(&temp_dir).await?;
+
+        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+        let raw_url = antigravity_download_url("macos", arch);
+        log(format!(
+            "正在解析 Antigravity CLI 下载源 (模式: {})...",
+            mirror_config.github_mode
+        ));
+        let download_url = crate::network::mirrors::resolve_github_download_url(
+            &client,
+            &raw_url,
+            &mirror_config.github_mode,
+            &mirror_config.github_mirror,
+        )
+        .await;
+        log(format!("选定加速下载链接: {}", download_url));
+
+        let dest = temp_dir.join("agy_cli_mac.tar.gz");
+        let tx_progress = event_sender.clone();
+        download_file(&client, &download_url, &dest, software_id, move |p| {
+            let _ = tx_progress.send(AppEvent::Progress(p));
+        })
+        .await?;
+
+        let Some(home) = crate::platform::home_dir() else {
+            bail!("无法定位用户主目录，安装中止");
+        };
+        let bin_dir = home.join(".local").join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await?;
+
+        log("下载完成，正在解压并安装到 ~/.local/bin ...".into());
+        // 发行包里的可执行文件名是 `antigravity`（无扩展名），官方安装脚本落盘时改名 `agy`；
+        // 两个名字都认，最终统一装成 `agy`。
+        let script = format!(
+            "set -e; \
+             tmp=$(mktemp -d); \
+             tar -xzf '{tar}' -C \"$tmp\"; \
+             f=$(find \"$tmp\" -type f \\( -name agy -o -name antigravity \\) | head -n 1); \
+             if [ -z \"$f\" ]; then echo 'agy release 包里没有 agy/antigravity 可执行文件' >&2; exit 1; fi; \
+             install -m 0755 \"$f\" '{bin}/agy'; \
+             rm -rf \"$tmp\"",
+            tar = dest.display(),
+            bin = bin_dir.display()
+        );
+        let out = tokio::process::Command::new("/bin/sh")
+            .args(["-c", &script])
+            .output()
+            .await?;
+        if !out.status.success() {
+            bail!(
+                "Antigravity CLI 解压安装失败: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        log("Antigravity CLI 安装完成！打开新终端输入 `agy` 即可启动。".into());
+        Ok(())
     }
 
     /// 执行具体的软件安装任务（平台分发入口）
@@ -420,6 +611,12 @@ impl InstallerEngine {
             bail!("未知 Agent 目标: {}", software_id);
         };
         let log = Self::make_log(event_sender, software_id);
+        let Some(npm_pkg) = spec.npm_pkg else {
+            bail!(
+                "{} 使用原生二进制分发，没有 npm 安装渠道",
+                spec.label
+            );
+        };
 
         if let Some(cli) = spec.cli {
             let (has_cli, _, _) = Detector::check_command(cli, "--version");
@@ -442,9 +639,9 @@ impl InstallerEngine {
 
         log(format!(
             "使用 npm 镜像 ({}) 安装 {} ({})...",
-            npm_registry, spec.label, spec.npm_pkg
+            npm_registry, spec.label, npm_pkg
         ));
-        NpmInstaller::install_global(spec.npm_pkg, proxy_ref, npm_registry, log.clone()).await?;
+        NpmInstaller::install_global(npm_pkg, proxy_ref, npm_registry, log.clone()).await?;
         log(spec.done_msg.to_string());
         Ok(())
     }
@@ -456,6 +653,7 @@ impl InstallerEngine {
     ) -> Result<()> {
         let log = Self::make_log(event_sender, software_id);
         let Some(pkgs) = agent_uninstall_pkgs(software_id) else {
+            log("该 Agent 为原生二进制分发，没有 npm 全局包需要卸载。".into());
             return Ok(());
         };
 
@@ -483,6 +681,7 @@ impl InstallerEngine {
             "claudecode" => Some("claude"),
             "pi" => Some("pi"),
             "oh-my-pi" => Some("omp"),
+            "antigravity" => Some("agy"),
             _ => None,
         };
 
@@ -507,6 +706,17 @@ impl InstallerEngine {
                 if software_id == "oh-my-pi" {
                     if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
                         let dir = std::path::Path::new(&local_app).join("omp");
+                        if dir.exists() {
+                            log(format!("清理原生文件目录: {:?}", dir));
+                            let _ = tokio::fs::remove_dir_all(dir).await;
+                        }
+                    }
+                }
+                // Antigravity 的二进制不在 ~/.local/bin，而是官方约定的 %LOCALAPPDATA%\agy\bin。
+                // 用户 PATH 里指向该目录的那一条保持不动（改 PATH 属系统级动作，卸载不碰）
+                if software_id == "antigravity" {
+                    if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+                        let dir = std::path::Path::new(&local_app).join("agy");
                         if dir.exists() {
                             log(format!("清理原生文件目录: {:?}", dir));
                             let _ = tokio::fs::remove_dir_all(dir).await;
@@ -682,6 +892,10 @@ impl InstallerEngine {
                 Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
+            "antigravity" => {
+                Self::install_antigravity_windows(proxy_ref, &mirror_config, event_sender).await?;
+            }
+
             other => {
                 bail!("未知软件目标: {}", other);
             }
@@ -839,7 +1053,7 @@ impl InstallerEngine {
                 log("Git 卸载执行完毕！".into());
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "antigravity" => {
                 Self::uninstall_agent(software_id, event_sender).await?;
                 Self::cleanup_native_artifacts(software_id, event_sender).await;
             }
@@ -944,6 +1158,10 @@ impl InstallerEngine {
                 Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
+            "antigravity" => {
+                Self::install_antigravity_macos(proxy_ref, &mirror_config, event_sender).await?;
+            }
+
             other => {
                 bail!("未知软件目标: {}", other);
             }
@@ -1036,7 +1254,7 @@ impl InstallerEngine {
                 }
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "antigravity" => {
                 Self::uninstall_agent(software_id, event_sender).await?;
                 Self::cleanup_native_artifacts(software_id, event_sender).await;
             }
@@ -1103,5 +1321,16 @@ mod tests {
         // 非 Agent 目标不参与这条判定
         assert!(agent_npm_guidance("nodejs", &env, false, false).is_none());
         assert!(agent_npm_guidance("git", &env, false, false).is_none());
+        // 原生二进制 Agent 没有 npm 依赖：缺 node 也不许拦
+        assert!(agent_npm_guidance("antigravity", &env, false, false).is_none());
+    }
+
+    /// Antigravity 的 release 资产名必须与官方仓库一一对应（Windows 走 zip，mac 走 tar.gz）
+    #[test]
+    fn antigravity_asset_table() {
+        assert_eq!(antigravity_asset("windows", "x64"), "agy_cli_windows_x64.zip");
+        assert_eq!(antigravity_asset("windows", "arm64"), "agy_cli_windows_arm64.zip");
+        assert_eq!(antigravity_asset("macos", "arm64"), "agy_cli_mac_arm64.tar.gz");
+        assert_eq!(antigravity_asset("macos", "x64"), "agy_cli_mac_x64.tar.gz");
     }
 }

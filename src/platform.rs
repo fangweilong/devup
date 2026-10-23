@@ -52,6 +52,8 @@ pub fn extra_search_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".bun").join("bin"));
         dirs.push(home.join(".opencode").join("bin"));
         dirs.push(home.join("AppData").join("Local").join("Programs").join("OpenAI").join("Codex").join("bin"));
+        // Antigravity CLI 官方落点：%LOCALAPPDATA%\agy\bin
+        dirs.push(home.join("AppData").join("Local").join("agy").join("bin"));
     }
     dirs.push(PathBuf::from("C:\\Program Files\\PowerShell\\7"));
     dirs.push(PathBuf::from("C:\\Program Files\\Git\\cmd"));

@@ -36,6 +36,7 @@
 | **AI 编程智能体** | **OpenAI Codex** | OpenAI 官方开源轻量级终端 Coding Agent | [openai/codex](https://github.com/openai/codex) |
 | **AI 编程智能体** | **Pi Agent** | Earendil Works 统一 LLM 循环与终端交互编程框架 | [earendil-works/pi](https://github.com/earendil-works/pi) |
 | **AI 编程智能体** | **OpenCode** | Anomaly 团队开源的高性能轻量 Coding Agent | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
+| **AI 编程智能体** | **Antigravity CLI** | Google 官方终端 Coding Agent（Go 原生 `agy`，不依赖 Node.js） | [google-antigravity/antigravity-cli](https://github.com/google-antigravity/antigravity-cli) |
 
 ---
 
@@ -47,7 +48,7 @@
 - 托管机器上点安装 / 卸载动作，弹的不是「确认执行」窗而是**黄色指引窗**：列出该管理器自己的命令（安装建议给 DevUp 本来要装的目标版本；卸载建议给托管方**已装**的版本，如 `nvm uninstall 26.12.0`），每条可单独复制。若某动作后端其实会放行（如有官方 PKG receipt 的卸载），窗口会照常是确认窗——弹窗形态完全跟随实时判定。
 - 这是行为变更，不是纯 bug 修复：拦的是「向他人托管的目录写 runtime / 盲删非 PKG 来源的 node」这类破坏性动作；未检测到管理器时行为与 0.3.5 一致。
 - 逃生口：确需 DevUp 接管系统安装的，把 `node.mode` 设为 `"system"`（0.3.6 不提供 UI，需手改配置文件——macOS `~/Library/Application Support/devup/config.json`，Windows `%APPDATA%\devup\config.json`）；该模式会跳过全部 Node 所有权检查，恢复 0.3.5 行为，每次安装日志首行会打印绕过警告。
-- **未装 Node.js 时安装 Agent**：点 Claude Code / Codex / Pi / omp / OpenCode 的安装，不再先弹「确认执行」再在 npm 那一步失败（Windows 上是 `'npm' 不是内部或外部命令` + 红色安装失败），而是直接弹黄色指引窗，说明缺 node/npm、给出可复制的 `npm install -g <包名>`，并提供「去安装 Node.js」按钮直达 Node 卡片（仍走 Node 自己的确认 / 托管护栏）。已装原生 CLI 的 Agent 升级不受影响，照旧走各自官方更新器；装了版本管理器的机器也不会被误拦（终端里有 node 就算有）。
+- **未装 Node.js 时安装 Agent**：点 Claude Code / Codex / Pi / omp / OpenCode 的安装，不再先弹「确认执行」再在 npm 那一步失败（Windows 上是 `'npm' 不是内部或外部命令` + 红色安装失败），而是直接弹黄色指引窗，说明缺 node/npm、给出可复制的 `npm install -g <包名>`，并提供「去安装 Node.js」按钮直达 Node 卡片（仍走 Node 自己的确认 / 托管护栏）。已装原生 CLI 的 Agent 升级不受影响，照旧走各自官方更新器；装了版本管理器的机器也不会被误拦（终端里有 node 就算有）。原生二进制分发的 Agent（如 Antigravity CLI 的 `agy`）完全不参与这条检测。
 
 ---
 

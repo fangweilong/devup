@@ -1010,6 +1010,33 @@ function getExecutionPlan(item, action) {
         }
       }
       break;
+
+    case "antigravity":
+      {
+        // 原生 Go 二进制：不经过 npm，命令预览也必须是 GitHub Release 资产这条真实链路
+        const isArm = /arm64|aarch64/i.test(navigator.userAgent);
+        const asset = isMac
+          ? `agy_cli_mac_${isArm ? "arm64" : "x64"}.tar.gz`
+          : `agy_cli_windows_${isArm ? "arm64" : "x64"}.zip`;
+        if (isUninstall) {
+          summary = "即将卸载 Antigravity CLI 原生二进制。";
+          commands = isMac
+            ? ["rm -f ~/.local/bin/agy"]
+            : [`powershell.exe -NoProfile -Command "Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'agy')"`];
+          notes = "仅删除二进制与其安装目录；用户 PATH 中指向该目录的条目保留不动。";
+        } else {
+          const opName = isUpgrade ? "升级" : (isReinstall ? "重新安装" : "安装");
+          summary = `通过 GitHub 加速镜像下载 Antigravity CLI (${item.latest_version || "最新"}) 并${opName}（Go 原生二进制，无需 Node.js）。`;
+          commands = [
+            `# 1. 下载 ${asset}（多源竞速，命中 ghproxy 等国内节点）`,
+            isMac
+              ? "tar -xzf agy.tar.gz -C /tmp && install -m 0755 /tmp/antigravity ~/.local/bin/agy"
+              : `powershell.exe -NoProfile -Command "tar.exe -xf agy.zip -C $env:TEMP\\devup-agy; Copy-Item $env:TEMP\\devup-agy\\antigravity.exe (Join-Path $env:LOCALAPPDATA 'agy\\bin\\agy.exe') -Force"`
+          ];
+          notes = "安装后 DevUp 会把 %LOCALAPPDATA%\\agy\\bin（macOS 为 ~/.local/bin）加入搜索路径；终端输入 `agy` 即可启动，官方二进制自带后台自动更新。";
+        }
+      }
+      break;
     default:
       summary = `即将执行 ${item.name} 的 ${tagText} 操作。`;
       commands = [`# 执行目标: ${item.id} (${action})`];
@@ -1296,6 +1323,8 @@ function getAppSvgIcon(id) {
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 9h8"/><path d="M10 9v9"/><path d="M14 9v9"/></svg>`;
     case "opencode":
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`;
+    case "antigravity":
+      return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="m5 21 7-12 7 12"/><path d="M8.5 16h7"/></svg>`;
     default:
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>`;
   }
