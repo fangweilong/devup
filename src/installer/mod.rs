@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::config::AppConfig;
 use crate::detector::{
     apply_target_version, check_install, check_uninstall, detect, node_channel, Detector, Channel,
-    GuardDecision, NodeEnv, NodeOwner,
+    Guidance, GuardDecision, NodeEnv, NodeOwner,
 };
 use crate::network::downloader::{create_http_client, download_file};
 use crate::network::mirrors::NODEJS_MIRROR_BASE;
@@ -94,7 +94,59 @@ fn agent_uninstall_pkgs(software_id: &str) -> Option<&'static [&'static str]> {
 #[cfg(windows)]
 const NODE_UNINSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference='SilentlyContinue'; function DevupKey($p){ if([string]::IsNullOrWhiteSpace($p)){ return '' }; $s=($p -replace '[\\/]+','/').Trim(); if($s.Length -gt 1){ $s=$s.TrimEnd('/') }; return $s.ToLower() }; $managerRoots=@(__ROOTS__); $targets=@(); $owned=@(); foreach($pkg in @(Get-Package -Name 'Node.js*' -ErrorAction SilentlyContinue)){ $loc=DevupKey $pkg.InstallLocation; $hit=$false; foreach($r in $managerRoots){ $rk=DevupKey $r; if($rk -and $loc -and (([string]::Equals($loc,$rk,[System.StringComparison]::Ordinal) -or $loc.StartsWith($rk + '/',[System.StringComparison]::Ordinal)))){ $hit=$true; break } }; if($hit){ $owned+=('{0} [{1}]' -f $pkg.Name,$pkg.InstallLocation) } else { $targets+=$pkg } }; foreach($t in $targets){ $t | Uninstall-Package -Force -ErrorAction SilentlyContinue | Out-Null }; Write-Output ('DEVUP_RESULT targets={0} owned={1}' -f $targets.Count,$owned.Count); foreach($o in $owned){ Write-Output ('DEVUP_OWNED ' + $o) }"#;
 
+/// Agent 安装的 npm 前置判定：`Some(指引)` = 本轮不该代为执行（缺 node/npm 且没有
+/// 原生更新器可走），`None` = 按原来的链路继续。
+///
+/// 判据与 `install_agent` 的真实分支同源——原生 CLI 在场时 `claude update` 之类不需要
+/// npm，所以 `cli_available` 为真就放行；其余情况 npm 是唯一安装渠道。
+/// `npm_available` 由调用侧探测（`Detector::check_command("npm", "--version")`），
+/// 本函数保持纯函数，便于表驱动测试；`env.managers` 非空表示「终端里有 node，只是
+/// GUI 进程的 PATH 里没有」，这时不拦（拦截会误伤 nvm/volta 用户）。
+pub(crate) fn agent_npm_guidance(
+    software_id: &str,
+    env: &NodeEnv,
+    cli_available: bool,
+    npm_available: bool,
+) -> Option<Guidance> {
+    let spec = agent_spec(software_id)?;
+    if npm_available || env.active_node.is_some() || !env.managers.is_empty() {
+        return None;
+    }
+    if spec.cli.is_some() && cli_available {
+        return None;
+    }
+    Some(Guidance {
+        reason: format!(
+            "{} 通过 npm 全局包安装与升级，本机未检测到可用的 node 与 npm。",
+            spec.label
+        ),
+        commands: vec![format!("npm install -g {}", spec.npm_pkg)],
+        note: Some(format!(
+            "先安装 Node.js（本页「Node.js (LTS)」卡片），装完后再安装 {}。",
+            spec.label
+        )),
+    })
+}
+
 impl InstallerEngine {
+    /// Agent 的前置探测：缺 node/npm 时返回指引，调用侧据此改发 `Guidance` 而不是等
+    /// `cmd.exe /c npm` 报 9009。原生 CLI 在场时直接放行（自升级不依赖 npm）。
+    ///
+    /// `detect()` 背着 `npm config get prefix` 的子进程等待，所以只在 npm 探测失败后
+    /// 才进 `spawn_blocking`；探测本身失败时按「照旧执行」处理（不因为我们的故障就拦）。
+    async fn agent_preflight(software_id: &str) -> Option<Guidance> {
+        let spec = agent_spec(software_id)?;
+        let cli_available = match spec.cli {
+            Some(cli) => Detector::check_command(cli, "--version").0,
+            None => false,
+        };
+        if cli_available || Detector::check_command("npm", "--version").0 {
+            return None;
+        }
+        let env = tokio::task::spawn_blocking(detect).await.ok()?;
+        agent_npm_guidance(software_id, &env, cli_available, false)
+    }
+
     /// 执行具体的软件安装任务（平台分发入口）
     pub async fn install_target(
         software_id: &str,
@@ -102,6 +154,21 @@ impl InstallerEngine {
         mirror_config: crate::config::MirrorConfig,
         event_sender: UnboundedSender<AppEvent>,
     ) -> Result<()> {
+        // Agent 的 npm 前置：缺 node/npm 时在进入平台分发前就改发指引。等到
+        // `cmd.exe /c npm` 才失败，用户看到的是 9009 加一条红色「安装失败」，而这不是故障。
+        // 与 node 护栏同一收尾契约：发了指引就 return，不发 `InstallSuccess`。
+        if agent_spec(software_id).is_some() {
+            if let Some(hint) = Self::agent_preflight(software_id).await {
+                send_guidance(
+                    &event_sender,
+                    software_id,
+                    hint.reason,
+                    hint.commands,
+                    hint.note,
+                );
+                return Ok(());
+            }
+        }
         // 平台函数返回 `false` = 护栏已出指引、本轮什么都没执行。这种收尾**不能**再发
         // `InstallSuccess`：前端收到它会 `delete state.guidance[target_id]`（`ui/app.js:92-94`），
         // 刚挂上的黄色横幅会被自己抹掉，还把「未代为执行」渲染成「安装完成」。
@@ -980,5 +1047,61 @@ impl InstallerEngine {
         }
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detector::node_source::{Manager, ManagerKind};
+    use std::path::PathBuf;
+
+    fn managed_env() -> NodeEnv {
+        NodeEnv {
+            managers: vec![Manager {
+                kind: ManagerKind::Nvm,
+                root: PathBuf::from("/Users/u/.nvm"),
+                versions: vec!["24.22.0".into()],
+            }],
+            ..NodeEnv::default()
+        }
+    }
+
+    /// 缺 node/npm 时安装 cc/codex 必须先出指引，而不是让 npm 进程自己失败。
+    #[test]
+    fn agent_npm_guidance_blocks_when_toolchain_missing() {
+        let env = NodeEnv::default();
+        let g = agent_npm_guidance("claudecode", &env, false, false)
+            .expect("裸装机器上安装 Claude Code 应被前置拦截");
+        assert!(g.reason.contains("Claude Code"), "reason 必须点名目标: {}", g.reason);
+        assert_eq!(g.commands, vec!["npm install -g @anthropic-ai/claude-code"]);
+        assert!(g.note.as_deref().unwrap_or("").contains("Node.js"));
+
+        let codex = agent_npm_guidance("codex", &env, false, false)
+            .expect("Codex 只有 npm 渠道，同样要拦");
+        assert_eq!(codex.commands, vec!["npm install -g @openai/codex"]);
+    }
+
+    /// 放行条件必须与 `install_agent` 的真实路径同源，否则拦下一个能跑的动作。
+    #[test]
+    fn agent_npm_guidance_allows_known_paths() {
+        let env = NodeEnv::default();
+        // npm 可用
+        assert!(agent_npm_guidance("codex", &env, false, true).is_none());
+        // 生效 node 在
+        let with_node = NodeEnv {
+            active_node: Some(PathBuf::from("/usr/local/bin/node")),
+            ..NodeEnv::default()
+        };
+        assert!(agent_npm_guidance("codex", &with_node, false, false).is_none());
+        // 有版本管理器：GUI PATH 里没有 npm，但用户终端里有，不能拦
+        assert!(agent_npm_guidance("codex", &managed_env(), false, false).is_none());
+        // 原生 CLI 在场：`claude update` 不依赖 npm
+        assert!(agent_npm_guidance("claudecode", &env, true, false).is_none());
+        // Codex 没有原生更新器，装过也必须走 npm
+        assert!(agent_npm_guidance("codex", &env, true, false).is_some());
+        // 非 Agent 目标不参与这条判定
+        assert!(agent_npm_guidance("nodejs", &env, false, false).is_none());
+        assert!(agent_npm_guidance("git", &env, false, false).is_none());
     }
 }

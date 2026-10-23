@@ -795,6 +795,22 @@ impl Detector {
             "官方CLI自升级 / npmmirror",
         ));
 
+        // Agent 的 npm 前置：与 `InstallerEngine::agent_preflight` 同一判定函数，
+        // 缺 node/npm 时卡片随 `guard_hint` 下发指引，点击直接弹指引窗——不再
+        // 「先确认、再吃一条 npm 报错」。`detect()` 本轮已跑过（node_env），
+        // 只有既没 node 也没管理器时才补一次 `npm --version`（自定义 npm 落点）。
+        let npm_available = node_env.active_node.is_some()
+            || !node_env.managers.is_empty()
+            || Self::check_command("npm", "--version").0;
+        for status in list.iter_mut().filter(|s| s.category == "agent") {
+            status.guard_hint = crate::installer::agent_npm_guidance(
+                &status.id,
+                &node_env,
+                status.installed,
+                npm_available,
+            );
+        }
+
         list
     }
 }

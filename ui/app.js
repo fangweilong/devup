@@ -1036,15 +1036,14 @@ function requestAction(id, action) {
   const item = state.softwares.find((s) => s.id === id) || { id, name: id, installed: false };
   // 任务 H：护栏预览会拒的动作不再弹「确认执行」窗——本轮注定拒绝，直接弹管理器指引窗
   // （内容 = 后端下发的同源预览：安装族看 `guard_hint`，卸载看 `uninstall_hint`）。
+  // Agent 卡片也会带 `guard_hint`（缺 node/npm），同一分流口径；后端 preflight 仍是最终权威。
   // 卸载的特殊性：有 PKG receipt / brew 自管的机器**真会删**，后端那侧预览就是 None，
   // 确认步骤原样保留——弹窗分流完全跟随判定结果，不预设「托管=卸载必拒」。
   // 后端 preflight 仍是最终权威，本窗只是免掉一次「确认了个不会执行的动作」的空转。
-  if (id === "nodejs") {
-    const hint = action === "uninstall" ? item.uninstall_hint : item.guard_hint;
-    if (hint) {
-      showGuardHintModal(item, hint);
-      return;
-    }
+  const hint = action === "uninstall" ? item.uninstall_hint : item.guard_hint;
+  if (hint) {
+    showGuardHintModal(item, hint);
+    return;
   }
   const plan = getExecutionPlan(item, action);
   state.pendingAction = { id, action, item, plan };
@@ -1083,6 +1082,11 @@ function requestAction(id, action) {
   // 指引窗会把这两处文案换掉，普通确认窗每次打开时复位
   const labelText = document.getElementById("modal-cmd-label-text");
   if (labelText) labelText.textContent = "即将执行的操作指令：";
+  const followupBtn = document.getElementById("modal-btn-followup");
+  if (followupBtn) {
+    followupBtn.style.display = "none";
+    followupBtn.dataset.target = "";
+  }
 
   if (modal) modal.classList.add("show");
 }
@@ -1126,7 +1130,10 @@ function showGuardHintModal(item, hint) {
   }
   if (title) title.textContent = "DevUp 不代为执行";
   if (tag) {
-    tag.textContent = item.managed_by ? `由 ${item.managed_by} 托管` : "版本管理器托管";
+    // Agent 的指引是「缺运行环境」，不是「谁托管了 node」，标签不能借用托管语义
+    tag.textContent = item.managed_by
+      ? `由 ${item.managed_by} 托管`
+      : (item.category === "agent" ? "缺少 Node.js 环境" : "版本管理器托管");
     tag.className = "action-tag managed";
   }
   // 逐字段 textContent：后端文本不能拼进 HTML（与横幅构建函数同一约束）
@@ -1165,9 +1172,16 @@ function showGuardHintModal(item, hint) {
   if (tipText) tipText.textContent = g.note || "";
   const gLabel = document.getElementById("modal-cmd-label-text");
   if (gLabel) gLabel.textContent = "请在你的终端执行：";
+  const followupBtn = document.getElementById("modal-btn-followup");
+  // Agent 卡片缺 node/npm 时的唯一自救路径：回到 Node 卡片走它自己的确认 / 护栏流程
+  const canJump = item.category === "agent";
+  if (followupBtn) {
+    followupBtn.style.display = canJump ? "" : "none";
+    followupBtn.dataset.target = canJump ? "nodejs" : "";
+  }
   if (confirmBtn) {
     confirmBtn.textContent = "知道了";
-    confirmBtn.className = "modal-btn primary";
+    confirmBtn.className = canJump ? "modal-btn secondary" : "modal-btn primary";
   }
   if (copyBtn && copyLabel) {
     copyBtn.classList.remove("copied");
@@ -1577,6 +1591,16 @@ window.addEventListener("DOMContentLoaded", () => {
   // 模态弹窗事件
   document.getElementById("modal-btn-cancel").addEventListener("click", closeConfirmModal);
   document.getElementById("modal-btn-confirm").addEventListener("click", executePendingAction);
+  // 指引窗的「去安装 Node.js」：关窗后走 Node 卡片自己的确认 / 托管护栏流程，
+  // 不在这里直接发 IPC（否则会绕过 node.mode 与托管判定）
+  const btnFollowup = document.getElementById("modal-btn-followup");
+  if (btnFollowup) {
+    btnFollowup.addEventListener("click", () => {
+      const target = btnFollowup.dataset.target;
+      closeConfirmModal();
+      if (target) installTarget(target);
+    });
+  }
   const btnCopyCmd = document.getElementById("modal-btn-copy-cmd");
   if (btnCopyCmd) {
     btnCopyCmd.addEventListener("click", copyModalCommands);
