@@ -613,6 +613,103 @@ main {
   line-height: 1.5;
 }
 
+/* 免费额度徽标：卡片头部的可悬浮标签 */
+.badge-free {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #4ade80;
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.35);
+  cursor: help;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.badge-free:hover,
+.badge-free:focus-visible {
+  background: rgba(63, 185, 80, 0.22);
+  border-color: rgba(63, 185, 80, 0.6);
+  outline: none;
+}
+
+/* 免费模型悬浮窗：body 级 fixed，避开卡片的 overflow 裁剪 */
+#free-tooltip {
+  position: fixed;
+  z-index: 200;
+  width: 330px;
+  max-width: calc(100vw - 16px);
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #0f1524;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  color: var(--text-main);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+#free-tooltip.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.free-tooltip-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 7px;
+}
+
+.free-tooltip-models {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin-bottom: 9px;
+}
+
+.free-tooltip-models li {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-main);
+  padding-left: 10px;
+  position: relative;
+}
+
+.free-tooltip-models li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+
+.free-tooltip-note {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.free-tooltip-meta {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--warning);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 7px;
+}
+
 /* 软件详细元信息列表：安装方式、最新版本 */
 .card-meta-list {
   display: flex;
