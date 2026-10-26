@@ -559,6 +559,43 @@ function attachGuidance(card) {
   card.insertBefore(buildGuidanceBanner(guide), footer);
 }
 
+// 免费额度悬浮说明：挂在 body 上（卡片有 overflow:hidden，内部浮层会被裁掉），
+// 由卡片内的徽标手动定位。名单与时效声明都由后端下发，这里只做排版。
+function showFreeTooltip(badge, free) {
+  let tip = document.getElementById("free-tooltip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "free-tooltip";
+    tip.setAttribute("role", "tooltip");
+    document.body.appendChild(tip);
+  }
+  const models = (free.models || []).map((m) => `<li>${m}</li>`).join("");
+  tip.innerHTML = `
+    <div class="free-tooltip-title">当前免费模型</div>
+    <ul class="free-tooltip-models">${models}</ul>
+    <p class="free-tooltip-note">${free.note || ""}</p>
+    <div class="free-tooltip-meta">信息核对于 ${free.checked_at || "未知日期"} · 免费名单可能随时变化，请以官方为准</div>
+  `;
+  tip.classList.add("show");
+
+  // 视口内定位：默认开在徽标下方，底部越界就翻到上方，左右夹在 8px 边距内
+  const r = badge.getBoundingClientRect();
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  const left = Math.min(Math.max(8, r.left), window.innerWidth - tw - 8);
+  let top = r.bottom + 8;
+  if (top + th > window.innerHeight - 8) {
+    top = Math.max(8, r.top - th - 8);
+  }
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+function hideFreeTooltip() {
+  const tip = document.getElementById("free-tooltip");
+  if (tip) tip.classList.remove("show");
+}
+
 // 与弹窗用的 fallbackCopy 同源，但要拿 execCommand 的返回值：
 // 复制到底成没成功决定下一级降级走不走，fallbackCopy 把它吞掉了
 function legacyCopyText(text) {
@@ -1010,6 +1047,30 @@ function getExecutionPlan(item, action) {
         }
       }
       break;
+
+    case "commandcode":
+      {
+        const reg = state.npmRegistry || "https://registry.npmmirror.com";
+        // Windows 不能占用 `cmd`（系统命令解释器），npm 包给的是 `cmdc` 别名
+        const launch = isMac ? "cmd" : "cmdc";
+        if (isUninstall) {
+          summary = "即将卸载 Command Code 全局 npm 包。";
+          commands = ["npm uninstall -g command-code"];
+          notes = "卸载后全局 `cmd` / `cmdc` / `command-code` 别名将被移除。";
+        } else if (isUpgrade && item.installed) {
+          summary = `即将升级 Command Code (${item.version || "已装"} → ${item.latest_version || "最新"})。`;
+          commands = [
+            "command-code update",
+            `# 备用回退: npm install -g command-code --registry=${reg}${proxyNotice}`
+          ];
+          notes = "优先调用官方自升级命令；失败时回退到配置的 npm 镜像覆盖安装。要求 Node.js 22+。";
+        } else {
+          summary = `通过配置的 npm 镜像源 (${reg}) 安装 Command Code 全局 CLI。`;
+          commands = [`npm install -g command-code --registry=${reg}${proxyNotice}`];
+          notes = `${proxyTip} 安装后在终端键入 \`${launch}\`（全名 \`command-code\` 亦可）即可启动；要求 Node.js 22+。`;
+        }
+      }
+      break;
     default:
       summary = `即将执行 ${item.name} 的 ${tagText} 操作。`;
       commands = [`# 执行目标: ${item.id} (${action})`];
@@ -1296,6 +1357,8 @@ function getAppSvgIcon(id) {
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 9h8"/><path d="M10 9v9"/><path d="M14 9v9"/></svg>`;
     case "opencode":
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`;
+    case "commandcode":
+      return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 6 10 12 4 18"></polyline><line x1="12" y1="18" x2="20" y2="18"></line></svg>`;
     default:
       return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>`;
   }
@@ -1408,6 +1471,10 @@ function renderAll() {
       `;
     }
 
+    const freeBadgeHtml = item.free_tag
+      ? `<span class="badge-free" tabindex="0">${item.free_tag.label}</span>`
+      : "";
+
     card.innerHTML = `
       <div class="card-header">
         <div class="card-title-wrap">
@@ -1419,6 +1486,7 @@ function renderAll() {
           </div>
         </div>
         <div class="card-header-badges">
+          ${freeBadgeHtml}
           <span class="badge-status ${badgeClass}">${badgeText}</span>
         </div>
       </div>
@@ -1452,6 +1520,18 @@ function renderAll() {
 
     attachGuidance(card);
 
+    // 免费额度徽标：悬浮/聚焦展开名单。数据来自后端 `free_tag`，前端不自造名单；
+    // 卡片会被整块重建，监听器随节点一起回收，不会累积。
+    if (item.free_tag) {
+      const freeBadge = card.querySelector(".badge-free");
+      if (freeBadge) {
+        freeBadge.addEventListener("mouseenter", () => showFreeTooltip(freeBadge, item.free_tag));
+        freeBadge.addEventListener("mouseleave", hideFreeTooltip);
+        freeBadge.addEventListener("focus", () => showFreeTooltip(freeBadge, item.free_tag));
+        freeBadge.addEventListener("blur", hideFreeTooltip);
+      }
+    }
+
     if (item.category === "env") {
       envContainer.appendChild(card);
     } else {
@@ -1462,6 +1542,9 @@ function renderAll() {
 
 // 页面加载完成后主动绑定
 window.addEventListener("DOMContentLoaded", () => {
+  // 浮层按视口坐标定位，滚动/点击后不予重算就直接收起，避免悬空
+  window.addEventListener("scroll", hideFreeTooltip, true);
+  document.addEventListener("click", hideFreeTooltip, true);
   // 分类 Tab 切换
   document.querySelectorAll(".nav-tab").forEach((tab) => {
     tab.addEventListener("click", () => {

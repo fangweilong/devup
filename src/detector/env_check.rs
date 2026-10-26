@@ -22,6 +22,11 @@ pub struct SoftwareStatus {
     pub name: String,
     pub category: String, // "env" 或 "agent"
     pub description: String,
+    /// 卡片「免费额度」标签与悬浮说明。`None` = 无免费档。
+    /// 免费名单是人工核对的静态快照（官方会按活动/容量调整），所以 `checked_at` 与
+    /// `note` 必须一起下发：悬浮窗要能让用户看出「这不是实时报价、开跑前需复核」。
+    #[serde(default)]
+    pub free_tag: Option<FreeTag>,
     pub repo_url: String,
     pub installed: bool,
     pub version: Option<String>,
@@ -51,6 +56,23 @@ pub struct SoftwareStatus {
     /// 所以前端只在 `Some` 时换成指引窗；`None` 时保留确认步骤，那一下是真删。
     #[serde(default)]
     pub uninstall_hint: Option<node_source::Guidance>,
+}
+
+/// 卡片上的免费额度标签 + 悬浮说明（前端渲染成徽标，鼠标悬浮展示名单）。
+///
+/// 免费模型是**静态快照**而不是实时查询：官方会按活动、容量与地区随时调整名单与
+/// 是否开放。字段设计就把这件事摆在界面上——`checked_at` 与 `note` 必须和名单一起
+/// 展示，避免用户把这里当成实时可用性承诺。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FreeTag {
+    /// 徽标文本，例如「免费额度」
+    pub label: String,
+    /// 当前可用的免费模型（人类可读名，必要时带 id）
+    pub models: Vec<String>,
+    /// 使用方式与时效声明
+    pub note: String,
+    /// 名单核对日期（YYYY-MM-DD）
+    pub checked_at: String,
 }
 
 pub struct Detector;
@@ -408,6 +430,7 @@ impl Detector {
             "pi" => Some("v1.3.0"),
             "oh-my-pi" => Some("v18.12.2"),
             "opencode" => Some("v2.0.32"),
+            "commandcode" => Some("v1.88.0"),
             _ => None,
         }
     }
@@ -430,6 +453,7 @@ impl Detector {
             ("codex", "@openai/codex"),
             ("oh-my-pi", "@oh-my-pi/pi-coding-agent"),
             ("opencode", "@opencode/cli"),
+            ("commandcode", "command-code"),
         ];
 
         for (id, pkg) in npm_tasks {
@@ -591,6 +615,7 @@ impl Detector {
             name: name.into(),
             category: category.into(),
             description: description.into(),
+            free_tag: None,
             repo_url: repo_url.into(),
             installed: ok,
             version: ver,
@@ -631,6 +656,7 @@ impl Detector {
                 name: "Windows Terminal".into(),
                 category: "env".into(),
                 description: "微软现代终端，支持多标签页、GPU 加速与 Unicode".into(),
+                free_tag: None,
                 repo_url: "https://github.com/microsoft/terminal".into(),
                 installed: wt_ok,
                 version: wt_ver,
@@ -784,7 +810,7 @@ impl Detector {
             "官方原生更新器 / npmmirror",
         ));
 
-        list.push(Self::probe_software(
+        let mut opencode_card = Self::probe_software(
             "opencode",
             "OpenCode",
             "agent",
@@ -793,7 +819,53 @@ impl Detector {
             "opencode",
             "npm",
             "官方CLI自升级 / npmmirror",
-        ));
+        );
+        // 免费模型是它最实际的入门理由：Zen 里有一批 Free 档模型，登录后 `opencode`
+        // 里 `/models` 直接可选，不用先充值。名单按 2026-10-26 的官方文档核对。
+        opencode_card.free_tag = Some(FreeTag {
+            label: "免费额度".into(),
+            models: vec![
+                "Big Pickle".into(),
+                "GLM-5.3-Flash Free".into(),
+                "DeepSeek V4.1 Flash Free".into(),
+                "MiMo-V2.6-Flash Free".into(),
+                "Nemotron 3.5 Lightning Free".into(),
+                "Jev 1.13 Free".into(),
+            ],
+            note: "OpenCode Zen 的免费档模型，登录账号后在 `/models` 里直接选；免费名单会随官方\
+                   活动与容量调整，开跑前以 opencode.ai/docs/zen 为准。"
+                .into(),
+            checked_at: "2026-10-26".into(),
+        });
+        list.push(opencode_card);
+
+        // 发行名是 `command-code`；`cmd` 在 Windows 上被系统命令解释器占用，npm 同时提供
+        // `cmdc` / `command-code` 两个别名，这里统一用全名探测与自升级，避免误判成 cmd.exe。
+        let mut commandcode_card = Self::probe_software(
+            "commandcode",
+            "Command Code",
+            "agent",
+            "面向开源模型的终端 Coding Agent，内置 taste 代码风格学习与工具调用修复".into(),
+            "https://github.com/CommandCodeAI/command-code",
+            "command-code",
+            "npm",
+            "官方CLI自升级 / npmmirror",
+        );
+        // 免费档同样是「有、但会变」：文档里以 `:free` 标注，容量/活动结束就下线。
+        // 名单按 2026-10-26 的官方模型表核对，悬浮窗必须把时效声明一起显示。
+        commandcode_card.free_tag = Some(FreeTag {
+            label: "免费额度".into(),
+            models: vec![
+                "Laguna S 2.1 · poolside/laguna-s-2.1-free".into(),
+                "Glyph Cluster · stealth/glyph-cluster:free".into(),
+                "Beam 1.0 · reflection/beam:free".into(),
+            ],
+            note: "按容量/活动开放的免费模型，请求不计额度；免费名单与开放状态随时调整，\
+                   开跑前用 `cmdc --list-models`（Windows）或 `cmd --list-models` 复核。"
+                .into(),
+            checked_at: "2026-10-26".into(),
+        });
+        list.push(commandcode_card);
 
         // Agent 的 npm 前置：与 `InstallerEngine::agent_preflight` 同一判定函数，
         // 缺 node/npm 时卡片随 `guard_hint` 下发指引，点击直接弹指引窗——不再
@@ -1044,6 +1116,7 @@ mod tests {
             name: "Node.js (LTS)".into(),
             category: "env".into(),
             description: "d".into(),
+            free_tag: None,
             repo_url: "https://nodejs.org".into(),
             installed,
             version: None,
@@ -1076,7 +1149,7 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(
             json,
-            r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d","repo_url":"https://nodejs.org","installed":false,"version":null,"latest_version":"v24.21.0","install_method":"nvm","default_channel":"c","managed_by":"nvm","managed_versions":["26.12.0","24.22.0","16.20.2"],"guard_hint":{"reason":"当前 Node.js 由 nvm（/Users/u/.nvm）托管。","commands":["nvm install 24.22.0"],"note":null},"uninstall_hint":null}"#
+            r#"{"id":"nodejs","name":"Node.js (LTS)","category":"env","description":"d","free_tag":null,"repo_url":"https://nodejs.org","installed":false,"version":null,"latest_version":"v24.21.0","install_method":"nvm","default_channel":"c","managed_by":"nvm","managed_versions":["26.12.0","24.22.0","16.20.2"],"guard_hint":{"reason":"当前 Node.js 由 nvm（/Users/u/.nvm）托管。","commands":["nvm install 24.22.0"],"note":null},"uninstall_hint":null}"#
         );
     }
 
@@ -1101,6 +1174,10 @@ mod tests {
         let parsed: SoftwareStatus = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.managed_by, None);
         assert!(parsed.managed_versions.is_empty());
+        assert!(
+            parsed.free_tag.is_none(),
+            "老载荷没有 free_tag，必须按 None 处理而不是解析失败"
+        );
     }
 
     /// install_method 口径修正 + `installed` 判定不受影响（D4 只改呈现，不改事实判定）

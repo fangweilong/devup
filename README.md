@@ -9,7 +9,7 @@
 ## ⚡ 核心能力
 
 1. **统一开发环境与 AI 工具链管理**：
-   - 不只是安装某个 Agent，而是覆盖从底层终端（Windows Terminal, PowerShell 7）、包管理（macOS Homebrew）、基础运行时（Node.js, Git）到顶层 AI 编程助手（oh-my-pi, Claude Code, Codex, Pi, OpenCode）的全链路环境。
+   - 不只是安装某个 Agent，而是覆盖从底层终端（Windows Terminal, PowerShell 7）、包管理（macOS Homebrew）、基础运行时（Node.js, Git）到顶层 AI 编程助手（oh-my-pi, Claude Code, Codex, Pi, OpenCode, Command Code）的全链路环境。
 2. **零终端操作，小白即用**：
    - 彻底免去繁琐的命令行排障、手动环境变量编辑。
    - 现代化暗黑卡片 UI（基于系统原生 WebView：Windows 10/11 内置 Edge WebView2 / macOS 内置 WKWebView，免装任何 Runtime）。
@@ -35,7 +35,8 @@
 | **AI 编程智能体** | **Claude Code** | Anthropic 官方研究级终端编码智能体 CLI | [anthropics/claude-code](https://github.com/anthropics/claude-code) |
 | **AI 编程智能体** | **OpenAI Codex** | OpenAI 官方开源轻量级终端 Coding Agent | [openai/codex](https://github.com/openai/codex) |
 | **AI 编程智能体** | **Pi Agent** | Earendil Works 统一 LLM 循环与终端交互编程框架 | [earendil-works/pi](https://github.com/earendil-works/pi) |
-| **AI 编程智能体** | **OpenCode** | Anomaly 团队开源的高性能轻量 Coding Agent | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
+| **AI 编程智能体** | **OpenCode** | Anomaly 团队开源的高性能轻量 Coding Agent（含免费额度，悬停徽标查看名单） | [anomalyco/opencode](https://github.com/anomalyco/opencode) |
+| **AI 编程智能体** | **Command Code** | 面向开源模型的终端 Coding Agent，自带 taste 学习（`cmd` / Windows `cmdc`，需 Node.js 22+；含免费额度） | [CommandCodeAI/command-code](https://github.com/CommandCodeAI/command-code) |
 
 ---
 
@@ -47,7 +48,7 @@
 - 托管机器上点安装 / 卸载动作，弹的不是「确认执行」窗而是**黄色指引窗**：列出该管理器自己的命令（安装建议给 DevUp 本来要装的目标版本；卸载建议给托管方**已装**的版本，如 `nvm uninstall 26.12.0`），每条可单独复制。若某动作后端其实会放行（如有官方 PKG receipt 的卸载），窗口会照常是确认窗——弹窗形态完全跟随实时判定。
 - 这是行为变更，不是纯 bug 修复：拦的是「向他人托管的目录写 runtime / 盲删非 PKG 来源的 node」这类破坏性动作；未检测到管理器时行为与 0.3.5 一致。
 - 逃生口：确需 DevUp 接管系统安装的，把 `node.mode` 设为 `"system"`（0.3.6 不提供 UI，需手改配置文件——macOS `~/Library/Application Support/devup/config.json`，Windows `%APPDATA%\devup\config.json`）；该模式会跳过全部 Node 所有权检查，恢复 0.3.5 行为，每次安装日志首行会打印绕过警告。
-- **未装 Node.js 时安装 Agent**：点 Claude Code / Codex / Pi / omp / OpenCode 的安装，不再先弹「确认执行」再在 npm 那一步失败（Windows 上是 `'npm' 不是内部或外部命令` + 红色安装失败），而是直接弹黄色指引窗，说明缺 node/npm、给出可复制的 `npm install -g <包名>`，并提供「去安装 Node.js」按钮直达 Node 卡片（仍走 Node 自己的确认 / 托管护栏）。已装原生 CLI 的 Agent 升级不受影响，照旧走各自官方更新器；装了版本管理器的机器也不会被误拦（终端里有 node 就算有）。
+- **未装 Node.js 时安装 Agent**：点 Claude Code / Codex / Pi / omp / OpenCode / Command Code 的安装，不再先弹「确认执行」再在 npm 那一步失败（Windows 上是 `'npm' 不是内部或外部命令` + 红色安装失败），而是直接弹黄色指引窗，说明缺 node/npm、给出可复制的 `npm install -g <包名>`，并提供「去安装 Node.js」按钮直达 Node 卡片（仍走 Node 自己的确认 / 托管护栏）。已装原生 CLI 的 Agent 升级不受影响，照旧走各自官方更新器；装了版本管理器的机器也不会被误拦（终端里有 node 就算有）。
 
 ---
 

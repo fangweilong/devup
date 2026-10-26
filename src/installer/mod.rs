@@ -71,6 +71,15 @@ fn agent_spec(software_id: &str) -> Option<AgentSpec> {
             npm_pkg: "@opencode/cli",
             done_msg: "OpenCode 安装成功！",
         },
+        "commandcode" => AgentSpec {
+            label: "Command Code",
+            // 用全名而不是 `cmd`：Windows 上 cmd.exe 会冒充它；npm 包的 bin 里
+            // `command-code` / `cmdc` / `cmd` 指向同一入口，全名三平台都能自升级
+            cli: Some("command-code"),
+            update_args: &["update"],
+            npm_pkg: "command-code",
+            done_msg: "Command Code 安装完成！终端输入 `cmd`（Windows 为 `cmdc`）即可启动。",
+        },
         _ => return None,
     };
     Some(spec)
@@ -84,6 +93,7 @@ fn agent_uninstall_pkgs(software_id: &str) -> Option<&'static [&'static str]> {
         "pi" => Some(&["@earendil-works/pi"]),
         "oh-my-pi" => Some(&["@oh-my-pi/pi-coding-agent"]),
         "opencode" => Some(&["@opencode/cli", "opencode-ai"]),
+        "commandcode" => Some(&["command-code"]),
         _ => None,
     }
 }
@@ -678,7 +688,7 @@ impl InstallerEngine {
                 log("Git 安装成功！".into());
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "commandcode" => {
                 Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
@@ -839,7 +849,7 @@ impl InstallerEngine {
                 log("Git 卸载执行完毕！".into());
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "commandcode" => {
                 Self::uninstall_agent(software_id, event_sender).await?;
                 Self::cleanup_native_artifacts(software_id, event_sender).await;
             }
@@ -940,7 +950,7 @@ impl InstallerEngine {
                 }
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "commandcode" => {
                 Self::install_agent(software_id, proxy_ref, &mirror_config.npm_registry, event_sender).await?;
             }
 
@@ -1036,7 +1046,7 @@ impl InstallerEngine {
                 }
             }
 
-            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" => {
+            "claudecode" | "codex" | "pi" | "oh-my-pi" | "opencode" | "commandcode" => {
                 Self::uninstall_agent(software_id, event_sender).await?;
                 Self::cleanup_native_artifacts(software_id, event_sender).await;
             }
@@ -1080,6 +1090,10 @@ mod tests {
         let codex = agent_npm_guidance("codex", &env, false, false)
             .expect("Codex 只有 npm 渠道，同样要拦");
         assert_eq!(codex.commands, vec!["npm install -g @openai/codex"]);
+
+        let commandcode = agent_npm_guidance("commandcode", &env, false, false)
+            .expect("Command Code 只有 npm 渠道，同样要拦");
+        assert_eq!(commandcode.commands, vec!["npm install -g command-code"]);
     }
 
     /// 放行条件必须与 `install_agent` 的真实路径同源，否则拦下一个能跑的动作。
