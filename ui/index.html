@@ -38,6 +38,12 @@
     </div>
 
     <div class="top-actions">
+      <button id="git-badge" class="proxy-pill git-pill pill-direct" title="点击登录 GitHub / GitLab（供终端 git clone / pull / push 使用）">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>
+        </svg>
+        <span id="git-text">Git 未登录</span>
+      </button>
       <div id="proxy-badge" class="proxy-pill" title="点击配置网络代理">
         <span class="pulse-dot"></span>
         <span id="proxy-text">正在嗅探网络节点...</span>
@@ -49,7 +55,7 @@
         <svg class="spin-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
         </svg>
-        刷新检测
+        <span class="btn-label">刷新检测</span>
       </button>
       <button id="btn-check-update" class="btn-update" title="检查 DevUp 软件版本更新">
         <svg class="update-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -57,10 +63,33 @@
           <polyline points="17 8 12 3 7 8"/>
           <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        <span id="btn-update-text">检查更新</span>
+        <span id="btn-update-text" class="btn-label">检查更新</span>
       </button>
     </div>
   </header>
+
+  <!-- Windows 自绘标题栏控制；macOS 用系统红绿灯，CSS 隐藏 -->
+  <div class="win-controls" id="win-controls">
+    <button class="win-btn" id="win-min" type="button" title="最小化" aria-label="最小化">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <line x1="6" y1="12" x2="18" y2="12"/>
+      </svg>
+    </button>
+    <button class="win-btn" id="win-max" type="button" title="最大化" aria-label="最大化">
+      <svg class="icon-max" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+        <rect x="6" y="6" width="12" height="12" rx="1"/>
+      </svg>
+      <svg class="icon-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+        <rect x="8" y="6" width="10" height="10" rx="1"/>
+        <path d="M6 9v9h9"/>
+      </svg>
+    </button>
+    <button class="win-btn win-close" id="win-close" type="button" title="关闭" aria-label="关闭">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <path d="M7 7l10 10M17 7L7 17"/>
+      </svg>
+    </button>
+  </div>
 
   <!-- 主内容区 -->
   <main>
@@ -214,7 +243,7 @@
           <span class="modal-tab-label">npm 镜像源</span>
           <span class="modal-tab-value" id="tab-value-npm">npmmirror</span>
         </button>
-      </div>
+        </div>
 
       <div class="modal-tab-panels">
         <!-- 面板 1: 网络代理 -->
@@ -305,6 +334,114 @@
       <div class="modal-actions">
         <button id="proxy-btn-cancel" class="modal-btn secondary">取消</button>
         <button id="proxy-btn-save" class="modal-btn primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git 登录管理弹窗：顶部「Git 未登录 / 已登录」入口直达 -->
+  <div id="git-modal" class="modal-overlay">
+    <div class="modal-card git-modal-card">
+      <div class="modal-header-row">
+        <div class="modal-icon-wrap accent">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/>
+          </svg>
+        </div>
+        <div class="modal-title-wrap">
+          <h3>Git 登录（clone / pull / push）</h3>
+          <p>登录后终端里的 <code>git clone</code> / <code>git pull</code> / <code>git push</code> 自动使用已保存的 Token，不再询问账号密码。Token 只写入系统凭据库，不写入配置文件，也不会发给镜像节点。</p>
+        </div>
+      </div>
+
+      <div id="git-account-list" class="git-account-list"></div>
+      <button id="git-account-add" class="git-account-add" type="button">＋ 添加 GitHub / GitLab 账号</button>
+
+      <div class="git-detect-block">
+        <div class="git-detect-row">
+          <input id="git-detect-host" class="proxy-url-input" type="text" spellcheck="false"
+                 placeholder="自建 GitLab 已有登录？输入域名检测，如 gitlab.company.com" />
+          <button id="git-detect-btn" class="git-account-login" type="button">检测系统登录</button>
+        </div>
+        <p id="git-detect-status" class="login-hint git-detect-status"></p>
+      </div>
+
+      <div class="git-identity-block">
+        <div class="git-identity-title">提交身份（user.name / user.email）</div>
+        <p class="login-hint">提交代码前必须设置，否则 <code>git commit</code> 会报错。只写入 Git 全局配置。</p>
+        <div class="git-identity-row">
+          <input id="git-user-name" class="proxy-url-input" type="text" spellcheck="false"
+                 placeholder="提交显示的名字" />
+          <input id="git-user-email" class="proxy-url-input" type="email" spellcheck="false"
+                 placeholder="邮箱，如 you@example.com" />
+          <button id="git-identity-save" class="git-account-login git-identity-save" type="button">保存身份</button>
+        </div>
+        <div id="git-identity-status" class="login-message git-identity-status"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="git-modal-close" class="modal-btn secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Token 登录引导弹窗：401/403 自动触发，或从 Git 管理弹窗点添加/重新登录 -->
+  <div id="login-modal" class="modal-overlay">
+    <div class="modal-card login-modal-card">
+      <div class="modal-header-row">
+        <div class="modal-icon-wrap accent">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7.5" cy="15.5" r="4.5"/>
+            <path d="M10.5 12.5 21 2"/>
+            <path d="M16 7l3 3"/>
+          </svg>
+        </div>
+        <div class="modal-title-wrap">
+          <h3>登录 GitHub / GitLab</h3>
+          <p id="login-desc">用于终端 git clone / pull / push 的 HTTPS 免密登录。Token 会写入系统凭据库，并注册为该域名的 Git 凭据助手，只需配置一次。</p>
+        </div>
+      </div>
+
+      <div class="login-field">
+        <span class="login-label">服务类型</span>
+        <div class="login-segmented" role="radiogroup" aria-label="服务类型">
+          <label class="login-segment selected">
+            <input type="radio" name="login-kind" value="github" checked />
+            <span>GitHub</span>
+          </label>
+          <label class="login-segment">
+            <input type="radio" name="login-kind" value="gitlab" />
+            <span>GitLab</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="login-field">
+        <label class="login-label" for="login-host">域名</label>
+        <input id="login-host" class="proxy-url-input" type="text" spellcheck="false"
+               placeholder="github.com 或 gitlab.mycompany.com" />
+        <p class="login-hint">官方实例填 github.com / gitlab.com；企业或自建实例填实际域名。</p>
+      </div>
+
+      <div class="login-field">
+        <label class="login-label" for="login-token">Access Token</label>
+        <input id="login-token" class="proxy-url-input" type="password" spellcheck="false"
+               autocomplete="off" placeholder="粘贴 ghp_… / github_pat_… / glpat-… 开头的 Token" />
+        <div class="login-token-guide">
+          <div class="login-token-guide-head">
+            <span>还没有 Token？按下面 3 步获取：</span>
+            <button id="login-token-link" class="login-token-link" type="button">打开创建页 ↗</button>
+          </div>
+          <ol id="login-token-steps" class="login-token-steps"></ol>
+          <code id="login-token-url" class="login-token-url"></code>
+          <p id="login-token-fallback" class="login-hint login-token-fallback"></p>
+        </div>
+      </div>
+
+      <div id="login-message" class="login-message"></div>
+
+      <div class="modal-actions">
+        <button id="login-btn-cancel" class="modal-btn secondary">稍后再说</button>
+        <button id="login-btn-submit" class="modal-btn primary">验证并启用 Git 登录</button>
       </div>
     </div>
   </div>

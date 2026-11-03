@@ -1309,3 +1309,599 @@ footer {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ---- Git 账号与登录引导弹窗 ---- */
+.git-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-account-empty {
+  padding: 16px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.git-account-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.git-account-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.git-account-host {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-account-user {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.git-account-user.ok {
+  color: var(--success);
+}
+
+.git-account-user.bad {
+  color: var(--danger);
+}
+
+.git-account-kind {
+  flex: none;
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+.git-account-logout {
+  flex: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.git-account-logout:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.git-account-add {
+  margin-top: 2px;
+  padding: 9px 12px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px dashed rgba(56, 189, 248, 0.4);
+  border-radius: 9px;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.git-account-add:hover {
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.login-modal-card {
+  max-width: 470px;
+  padding: 22px 24px;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.login-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.login-segmented {
+  display: flex;
+  gap: 6px;
+}
+
+.login-segment {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.login-segment.selected {
+  border-color: rgba(56, 189, 248, 0.5);
+  background: rgba(56, 189, 248, 0.08);
+  color: #fff;
+}
+
+.login-segment input {
+  accent-color: var(--accent);
+}
+
+.login-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.login-token-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.login-token-link:hover {
+  text-decoration: underline;
+}
+
+.login-message {
+  min-height: 17px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger);
+}
+
+.login-message.ok {
+  color: var(--success);
+}
+
+.login-message.info {
+  color: var(--warning);
+}
+
+.git-account-login {
+  flex: none;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.git-account-login:hover {
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.login-token-guide {
+  margin-top: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.login-token-guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.login-token-guide-head .login-token-link {
+  flex: none;
+  align-self: auto;
+}
+
+.login-token-steps {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.login-token-steps li {
+  margin: 1px 0;
+}
+
+.login-token-steps code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.1);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.login-token-url {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-modal-card {
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.login-token-fallback {
+  margin-top: 4px;
+  opacity: 0.85;
+}
+
+.login-modal-card {
+  gap: 12px;
+  padding: 20px 24px;
+}
+
+.login-modal-card .login-field {
+  margin-top: 4px;
+}
+
+/* ---- Git 提交身份 ---- */
+.git-identity-block {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-identity-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.git-identity-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.git-identity-status {
+  min-height: 0;
+  margin-top: 0;
+}
+
+.git-identity-row {
+  grid-template-columns: 1fr 1fr auto;
+  align-items: stretch;
+}
+
+.git-identity-save {
+  padding: 0 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.git-identity-block {
+  gap: 6px;
+}
+
+/* ---- 顶层 Git 登录入口与独立弹窗 ---- */
+.git-pill {
+  font-family: var(--font-mono);
+}
+
+.git-pill svg {
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+.git-pill:hover svg {
+  opacity: 1;
+}
+
+.git-modal-card {
+  width: 90%;
+  max-width: 620px;
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 22px 24px;
+  gap: 12px;
+}
+
+.git-modal-card .modal-title-wrap p code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.1);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+/* ---- 系统 Git 登录检测 ---- */
+.git-detect-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.git-detect-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.git-detect-row .git-account-login {
+  padding: 0 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.git-detect-status {
+  min-height: 15px;
+}
+
+.git-detect-status.ok {
+  color: var(--success);
+}
+
+.git-detect-status.bad {
+  color: var(--danger);
+}
+
+.git-account-source {
+  flex: none;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.git-detect-login {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---- 启动探测占位 ---- */
+.grid-loading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.grid-loading::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: grid-spin 0.8s linear infinite;
+}
+
+@keyframes grid-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Windows 自绘标题栏 ---- */
+.win-controls {
+  display: none;
+}
+
+body.is-win .win-controls {
+  display: flex;
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 60px;
+  z-index: 2000;
+}
+
+body.is-win header {
+  min-height: 60px;
+  /* 右侧给固定定位的窗口按钮留出 3×46px，避免工具栏内容压到按钮下面 */
+  padding: 0 138px 0 28px;
+}
+
+.win-btn {
+  width: 46px;
+  height: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: default;
+  transition: background 0.12s, color 0.12s;
+}
+
+.win-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+}
+
+.win-btn:active {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.win-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.win-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.win-close:active {
+  background: #c50f1f;
+}
+
+.win-btn .icon-restore {
+  display: none;
+}
+
+body.window-maximized .win-btn .icon-max {
+  display: none;
+}
+
+body.window-maximized .win-btn .icon-restore {
+  display: block;
+}
+
+/* Windows 标题栏更紧凑：头部同时承担标题栏与工具栏，优先保证不换行 */
+body.is-win header {
+  gap: 10px;
+}
+
+body.is-win .logo-area {
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+body.is-win .brand-subtitle {
+  display: none;
+}
+
+body.is-win .brand-title {
+  white-space: nowrap;
+}
+
+body.is-win .header-center-tabs,
+body.is-win .top-actions {
+  flex-shrink: 0;
+}
+
+body.is-win .nav-tab {
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+body.is-win .top-actions {
+  gap: 8px;
+}
+
+body.is-win .proxy-pill,
+body.is-win .git-pill,
+body.is-win button.btn-refresh,
+body.is-win button.btn-update {
+  white-space: nowrap;
+}
+
+@media (max-width: 1150px) {
+  body.is-win .brand-version {
+    display: none;
+  }
+
+  body.is-win .btn-label {
+    display: none;
+  }
+
+  body.is-win button.btn-refresh,
+  body.is-win button.btn-update {
+    padding: 6px 9px;
+  }
+
+  body.is-win .nav-tab {
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+}
+
+/* ---- 统一暗色细滚动条（WebView2 / Chromium） ---- */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track-piece {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(139, 148, 158, 0.35);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.55);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-button {
+  background: transparent;
+  display: none;
+}
+
+
+main {
+  /* 卡片渲染前后不因滚动条出现/消失而横向跳动 */
+  scrollbar-gutter: stable;
+}

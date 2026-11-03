@@ -23,10 +23,30 @@ pub enum IpcCommand {
         npm_registry: String,
     },
     OpenUrl { url: String },
+    /// 读取 Git 账号列表；`has_token` 实时查系统凭据库，不读配置里的假状态
+    AuthList,
+    /// 验证并保存 GitHub/GitLab Token：验证通过才写系统凭据库，失败不落盘
+    AuthLogin {
+        host: String,
+        kind: crate::network::auth::AuthKind,
+        token: String,
+    },
+    /// 退出登录：删除系统凭据库中的 token 并移除账号元数据
+    AuthLogout { host: String },
+    /// 读取 Git 全局提交身份（user.name / user.email）
+    GitIdentityGet,
+    /// 写入 Git 全局提交身份；提交代码前必须设置
+    GitIdentitySet { name: String, email: String },
+    /// 检测指定域名在系统 Git helper 中是否已有登录（自建 GitLab 等手动域名）
+    AuthDetect { host: String },
     CheckUpdate,
     PerformSelfUpdate { download_url: String },
-    /// macOS 头部空白区按下时，请求原生整窗拖拽（替代 movableByWindowBackground 全局劫持）
+    /// 头部空白区按下时，请求原生整窗拖拽（macOS 直接发起；Windows 自绘标题栏同链路）
     DragWindow,
+    /// 自绘标题栏窗口控制
+    WindowMinimize,
+    WindowToggleMaximize,
+    WindowClose,
     /// 退出应用（macOS Cmd+Q 前端桥接，与点击关闭按钮走同一退出链路）
     Quit,
 }
@@ -40,6 +60,32 @@ pub enum AppEvent {
     MirrorOptions {
         github: Vec<crate::network::mirrors::BuiltinMirror>,
         npm: Vec<crate::network::mirrors::BuiltinMirror>,
+    },
+    /// 当前已保存的 Git 账号（仅元数据 + 凭据是否存在）
+    AuthAccounts {
+        accounts: Vec<crate::network::auth::GitAccountView>,
+    },
+    /// 登录流程结果：成功时 `username` 有值，失败时 `error` 有值
+    AuthLoginResult {
+        host: String,
+        username: Option<String>,
+        error: Option<String>,
+    },
+    /// 远端返回未认证或限流状态且未登录：前端据此弹登录引导窗（同一 host 每次启动只提示一次）
+    AuthRequired(crate::network::auth::AuthChallenge),
+    /// 自绘标题栏最大化状态：按钮、系统拖拽、双击都经此同步图标
+    WindowMaximized { maximized: bool },
+    /// 手动检测系统 Git 登录的结果；`username` 为空表示未找到完整凭据
+    AuthDetected {
+        host: String,
+        username: Option<String>,
+        error: Option<String>,
+    },
+    /// Git 全局提交身份。`error` 非空时前端只展示错误，不清空用户已填内容。
+    GitIdentity {
+        name: Option<String>,
+        email: Option<String>,
+        error: Option<String>,
     },
     /// 当前网络、代理配置与镜像信息
     ProxyStatus {
@@ -168,6 +214,174 @@ mod tests {
             json,
             r#"{"type":"Guidance","data":{"target_id":"nodejs","reason":"Node.js 由 nvm 托管（~/.nvm，当前 v26.12.0）","commands":["nvm install 24.22.0","nvm use 24.22.0"],"note":"确需 DevUp 接管系统安装时，把 config.json 的 node.mode 设为 system 可跳过全部护栏"}}"#
         );
+    }
+
+    /// Git 登录链路的三个事件形状 + 前端分支同源校验。
+    /// Token 不在任何事件里：前端只在提交时短暂持有，后端验证后直接写系统凭据库。
+    #[test]
+    fn test_auth_events_contract_matches_ui() {
+        use crate::network::auth::{AuthChallenge, AuthKind, GitAccountView};
+
+        let accounts = serde_json::to_string(&AppEvent::AuthAccounts {
+            accounts: vec![GitAccountView {
+                host: "github.com".to_string(),
+                kind: AuthKind::Github,
+                username: "alice".to_string(),
+                has_token: true,
+                valid: None,
+                system_ready: false,
+                managed: true,
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            accounts,
+            r#"{"type":"AuthAccounts","data":{"accounts":[{"host":"github.com","kind":"github","username":"alice","has_token":true,"valid":null,"system_ready":false,"managed":true}]}}"#
+        );
+
+        let required = serde_json::to_string(&AppEvent::AuthRequired(AuthChallenge {
+            host: "gitlab.corp.example.com".to_string(),
+            kind: AuthKind::Gitlab,
+            message: "需要登录".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(
+            required,
+            r#"{"type":"AuthRequired","data":{"host":"gitlab.corp.example.com","kind":"gitlab","message":"需要登录"}}"#
+        );
+
+        let login = serde_json::to_string(&AppEvent::AuthLoginResult {
+            host: "github.com".to_string(),
+            username: Some("alice".to_string()),
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(
+            login,
+            r#"{"type":"AuthLoginResult","data":{"host":"github.com","username":"alice","error":null}}"#
+        );
+
+        let ui = include_str!("../ui/app.js");
+        for event_type in ["AuthAccounts", "AuthRequired", "AuthLoginResult"] {
+            assert!(
+                ui.contains(&format!("case \"{event_type}\":")),
+                "ui/app.js 的 window.onEvent 缺少 {event_type} 分支"
+            );
+        }
+        assert!(!accounts.contains("\"token\":") && !login.contains("\"token\":"));
+    }
+
+    /// 提交身份事件与两个 IPC 命令的前后端契约。
+    #[test]
+    fn test_git_identity_contract_matches_ui() {
+        let event = serde_json::to_string(&AppEvent::GitIdentity {
+            name: Some("Zhang San".to_string()),
+            email: Some("zs@example.com".to_string()),
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(
+            event,
+            r#"{"type":"GitIdentity","data":{"name":"Zhang San","email":"zs@example.com","error":null}}"#
+        );
+        assert!(include_str!("../ui/app.js").contains("case \"GitIdentity\":"));
+
+        let cmd: IpcCommand = serde_json::from_str(
+            r#"{"cmd":"GitIdentitySet","payload":{"name":"Zhang San","email":"zs@example.com"}}"#,
+        )
+        .unwrap();
+        match cmd {
+            IpcCommand::GitIdentitySet { name, email } => {
+                assert_eq!(name, "Zhang San");
+                assert_eq!(email, "zs@example.com");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert!(matches!(
+            serde_json::from_str::<IpcCommand>(r#"{"cmd":"GitIdentityGet"}"#).unwrap(),
+            IpcCommand::GitIdentityGet
+        ));
+    }
+
+    /// 自绘标题栏的 IPC 与最大化事件契约。
+    #[test]
+    fn test_window_controls_contract_matches_ui() {
+        for literal in [
+            r#"{"cmd":"WindowMinimize","payload":null}"#,
+            r#"{"cmd":"WindowToggleMaximize","payload":null}"#,
+            r#"{"cmd":"WindowClose","payload":null}"#,
+        ] {
+            let cmd: IpcCommand = serde_json::from_str(literal).unwrap();
+            assert!(matches!(
+                cmd,
+                IpcCommand::WindowMinimize
+                    | IpcCommand::WindowToggleMaximize
+                    | IpcCommand::WindowClose
+            ));
+        }
+
+        let event = serde_json::to_string(&AppEvent::WindowMaximized { maximized: true }).unwrap();
+        assert_eq!(
+            event,
+            r#"{"type":"WindowMaximized","data":{"maximized":true}}"#
+        );
+        let ui = include_str!("../ui/app.js");
+        assert!(ui.contains("case \"WindowMaximized\":"));
+        assert!(ui.contains("postCommand(\"WindowMinimize\")"));
+        assert!(ui.contains("postCommand(\"WindowToggleMaximize\")"));
+        assert!(ui.contains("postCommand(\"WindowClose\")"));
+    }
+
+    /// 手动检测系统 Git 登录的事件/命令契约。
+    #[test]
+    fn test_auth_detect_contract_matches_ui() {
+        let event = serde_json::to_string(&AppEvent::AuthDetected {
+            host: "gitlab.corp.example.com".to_string(),
+            username: Some("alice".to_string()),
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(
+            event,
+            r#"{"type":"AuthDetected","data":{"host":"gitlab.corp.example.com","username":"alice","error":null}}"#
+        );
+        let ui = include_str!("../ui/app.js");
+        assert!(ui.contains("case \"AuthDetected\":"));
+
+        let cmd: IpcCommand = serde_json::from_str(
+            r#"{"cmd":"AuthDetect","payload":{"host":"gitlab.corp.example.com"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            cmd,
+            IpcCommand::AuthDetect { ref host } if host == "gitlab.corp.example.com"
+        ));
+    }
+
+    /// 前端 postCommand 的字面量必须能被 IpcCommand 反序列化：
+    /// kind 是小写字符串，token 只在这个方向出现（后端 → 前端的事件里没有）。
+    #[test]
+    fn test_auth_ipc_payload_parses_from_ui_literals() {
+        let cmd: IpcCommand = serde_json::from_str(
+            r#"{"cmd":"AuthLogin","payload":{"host":"gitlab.corp.example.com","kind":"gitlab","token":"glpat-x"}}"#,
+        )
+        .unwrap();
+        match cmd {
+            IpcCommand::AuthLogin { host, kind, token } => {
+                assert_eq!(host, "gitlab.corp.example.com");
+                assert_eq!(kind, crate::network::auth::AuthKind::Gitlab);
+                assert_eq!(token, "glpat-x");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cmd: IpcCommand =
+            serde_json::from_str(r#"{"cmd":"AuthLogout","payload":{"host":"github.com"}}"#).unwrap();
+        assert!(matches!(cmd, IpcCommand::AuthLogout { .. }));
+        assert!(matches!(
+            serde_json::from_str::<IpcCommand>(r#"{"cmd":"AuthList"}"#).unwrap(),
+            IpcCommand::AuthList
+        ));
     }
 
     /// 任务 D 可能先只给 reason，且逃生口提示未必有：空命令与缺省 note 也要有稳定形状

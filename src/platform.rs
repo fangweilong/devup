@@ -18,6 +18,23 @@ use std::path::Path;
 #[cfg(windows)]
 use std::process::Command;
 
+/// 隐藏 Windows 子进程的控制台窗口。
+///
+/// GUI 程序（windows_subsystem = "windows"）没有控制台，`git` / `cmd` / `where` 等
+/// 控制台程序被拉起时 Windows 会各开一个黑窗。所有短命探测命令都必须走这里，
+/// 否则每次启动 / 刷新都会在桌面上闪一串黑框。
+pub fn hide_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// 判断 unix 文件是否存在且可执行
 #[cfg(unix)]
 fn is_executable(p: &Path) -> bool {

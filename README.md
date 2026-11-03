@@ -40,6 +40,20 @@
 
 ---
 
+## 🔐 Git 登录（clone / pull / push）
+
+公开仓库的 clone 通常不需要登录；**私有仓库、企业自建实例、push 代码**时，点击顶部工具栏的 **「Git 未登录 / Git 已登录」** 入口登录一次即可（不再藏在网络配置里）：
+
+- **已有的系统 Git 登录会被识别**：通过 `git credential fill` 只读查询 GCM / osxkeychain / store / `gh` 等 helper，已登录就直接显示「系统 Git 已登录」，不会误报「未登录」，也不弹任何授权窗。`github.com` / `gitlab.com` 自动检测；自建 GitLab 在弹窗内输入域名点「检测系统登录」，未找到时会直接给出「登录此域名」入口，不用重新输入。
+- 登录后 DevUp 把 Token 注册为该域名的 **Git credential helper**。终端里的 `git clone` / `git pull` / `git push` 自动取用，不再询问账号密码，也不需要记 PAT。
+- GitHub / GitLab 官方都已禁用账号密码认证，登录窗只接受 **Access Token**：弹窗内附 3 步创建说明、所需权限（GitHub `repo`；GitLab `read_repository` + `write_repository`）和当前实例的创建按钮。
+- Token 验证通过后才写入系统凭据库（Windows 凭据管理器 / macOS 钥匙串），**不写入 `config.json`**，也不会附加到 ghproxy 等镜像请求。Git 配置里只记录凭据助手路径，不落 Token 明文。
+- 退出登录会删除 Token，并恢复登录前该域名的 credential helper 配置；不影响其它域名的全局 helper（如 Git Credential Manager）。
+- 同一个 Git 登录弹窗里可设置提交身份 `user.name` / `user.email`：提交代码前必须填，否则 `git commit` 会报错。GitHub 登录后会给出 `@users.noreply.github.com` 的默认邮箱供确认。
+- DevUp 自身的版本检测 / 更新检查也会复用该 Token，降低 GitHub 匿名 API 限流（60 次/小时）的影响；遇到 `401` 或未登录状态下的 `403/429` 会自动弹出登录引导，同一 host 每次启动最多提示一次。
+
+---
+
 ## 📌 行为变更（0.3.6）
 
 检测到本机装有 Node 版本管理器（nvm / fnm / Volta / mise / asdf / proto / n / Scoop / nvs）或 `/usr/local` 下的 node 不是官方 PKG 装入时，DevUp **不再代为安装或卸载 Node.js**，改为弹出一条**终端指引**（非错误横幅）：说明当前托管方与其目录（如 `~/.nvm`，含当前版本），并给出可直接复制的对应命令（如 `nvm install 24.21.0`）。
@@ -66,7 +80,7 @@ devup/
 │   ├── platform.rs            # 跨平台适配层：命令查找 / PATH 扩展 / 外链打开 / 架构标识
 │   ├── detector/              # 实时环境与 Agent 探活模块 (纯命令探测，零污染)
 │   ├── installer/             # 平台安装器：Windows MSI/AppX/WinGet、macOS Homebrew/PKG 提权、npm 国内源自动安装
-│   ├── network/               # 系统代理自动嗅探、多源镜像并发测速、流式带速下载器
+│   ├── network/               # 系统代理自动嗅探、多源镜像并发测速、流式带速下载器、Git 凭据管理
 │   └── state.rs               # IPC 协议与事件定义
 ├── packaging/
 │   └── macos/                 # macOS 打包层：Info.plist 模板、AppIcon.icns、bundle.sh（.app/.dmg/.tar.gz）

@@ -9,6 +9,10 @@ let state = {
   npmRegistry: "https://registry.npmmirror.com",
   githubMirrors: [],
   npmMirrors: [],
+  // Git 账号（host / kind / username / has_token），由后端下发
+  gitAccounts: [],
+  // Git 全局提交身份（user.name / user.email）
+  gitIdentity: { name: "", email: "" },
   isRefreshing: false,
   activeTaskId: null,
   activeFilter: "all",
@@ -31,24 +35,38 @@ function openExternal(url) {
   postCommand("OpenUrl", { url });
 }
 
-// macOS 透明标题栏融合模式下，为头部预留红绿灯与标题栏热区空间
+// macOS 透明标题栏 / Windows 自绘标题栏：头部预留标题栏热区与窗口按钮空间
 const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform || "") || /Mac OS X/.test(navigator.userAgent || "");
+const isWindows = /^Win/.test(navigator.platform || "") || /Windows/.test(navigator.userAgent || "");
 if (isMac) {
   document.body.classList.add("is-mac");
+}
+if (isWindows) {
+  document.body.classList.add("is-win");
+}
 
-  // 必须在 mousedown 阶段启动原生拖拽，让 macOS 使用真实的按下事件作为
+if (isMac || isWindows) {
+  // 必须在 mousedown 阶段启动原生拖拽，让系统使用真实的按下事件作为
   // 拖拽锚点。延迟到 mousemove/IPC 阶段会丢失按下位置，尤其在副屏上会造成
-  // 窗口瞬移到鼠标下方。
+  // 窗口瞬移到鼠标下方。Windows 走同一 IPC，由 tao 发 HTCAPTION，保留贴边分屏。
   const headerEl = document.querySelector("header");
   if (headerEl) {
     headerEl.addEventListener("mousedown", (e) => {
       if (e.button !== 0 || e.target.closest("button, input, select, textarea, a")) {
         return;
       }
+      // Windows 双击标题栏空白处最大化 / 还原（原生拖拽循环收不到 caption 双击，
+      // 由第二次 mousedown 的 detail 判定，且不再启动拖拽）
+      if (isWindows && e.detail === 2) {
+        postCommand("WindowToggleMaximize");
+        return;
+      }
       postCommand("DragWindow");
     });
   }
+}
 
+if (isMac) {
   // tao 0.37 无应用菜单，Cmd+Q 没有系统级归宿；webview 获得焦点时快捷键
   // 会作为普通 keydown 进入页面，这里拦截并经 IPC 走与关闭窗口一致的退出链路。
   window.addEventListener("keydown", (e) => {
@@ -94,6 +112,57 @@ window.onEvent = function (event) {
       state.githubMirrors = event.data.github || [];
       state.npmMirrors = event.data.npm || [];
       renderMirrorOptions();
+      break;
+
+    case "AuthAccounts":
+      state.gitAccounts = event.data.accounts || [];
+      renderGitAccounts();
+      updateGitBadge();
+      updateTabValues();
+      break;
+
+    case "AuthLoginResult":
+      handleLoginResult(event.data);
+      break;
+
+    case "GitIdentity":
+      handleGitIdentity(event.data);
+      break;
+
+    case "AuthDetected":
+      handleAuthDetected(event.data);
+      break;
+
+    case "WindowMaximized":
+      document.body.classList.toggle("window-maximized", !!event.data.maximized);
+      {
+        const maxBtn = document.getElementById("win-max");
+        if (maxBtn) {
+          maxBtn.title = event.data.maximized ? "还原" : "最大化";
+          maxBtn.setAttribute("aria-label", event.data.maximized ? "还原" : "最大化");
+        }
+      }
+      break;
+
+    case "AuthRequired":
+      // 未认证 / 限流错误的引导：弹窗已开着时不覆盖用户正在输入的内容。
+      // 系统 Git（GCM/钥匙串）已登录或 DevUp Token 有效时，header 已显示「Git 已登录」，
+      // 再弹登录窗会让用户误以为没登录；此时只记一条日志，版本接口仍可能被匿名限流。
+      if (gitLoginReady(event.data.host)) {
+        appendLog(
+          `🔐 ${event.data.host} 版本接口被匿名限流；本地 Git 登录已就绪，已跳过登录窗。`
+        );
+        break;
+      }
+      if (!document.getElementById("login-modal").classList.contains("show")) {
+        appendLog(`🔐 ${event.data.message || "需要登录 GitHub / GitLab 才能继续拉取与推送代码。"}`);
+        openLoginModal({
+          host: event.data.host,
+          kind: event.data.kind,
+          message: event.data.message,
+          auto: true,
+        });
+      }
       break;
 
     case "Log":
@@ -265,6 +334,42 @@ function updateTabValues() {
   set("tab-value-npm", npmText);
 }
 
+// 该域名是否已有可直接工作的 Git 登录：系统 helper（GCM/钥匙串）或有效 DevUp Token。
+// 用于 AuthRequired 判断「真的没登录」还是「匿名 API 被限流」，避免登录窗和 header 状态打架。
+function gitLoginReady(host) {
+  if (!host) return false;
+  return state.gitAccounts.some(
+    (a) =>
+      a.host === host &&
+      (a.system_ready || (a.managed !== false && a.has_token && a.valid !== false))
+  );
+}
+
+/// 顶部 Git 状态入口：未登录时是灰色，登录后高亮，凭据失效时提示重新登录
+function updateGitBadge() {
+  const badge = document.getElementById("git-badge");
+  const text = document.getElementById("git-text");
+  if (!badge || !text) return;
+
+  const total = state.gitAccounts.length;
+  const signed = state.gitAccounts.filter(
+    (a) => (a.has_token && a.valid !== false) || a.system_ready
+  ).length;
+  if (!total) {
+    text.textContent = "Git 未登录";
+    badge.classList.add("pill-direct");
+    badge.title = "点击登录 GitHub / GitLab，让终端 git clone / pull / push 不再询问账号密码";
+  } else if (signed) {
+    text.textContent = `Git 已登录${signed > 1 ? ` ${signed}` : ""}`;
+    badge.classList.remove("pill-direct");
+    badge.title = `已登录：${state.gitAccounts.filter((a) => a.has_token || a.system_ready).map((a) => a.host).join(" / ")}\n点击管理 Git 账号与提交身份`;
+  } else {
+    text.textContent = "Git 登录失效";
+    badge.classList.add("pill-direct");
+    badge.title = "已保存的凭据被服务端拒绝，点击重新登录";
+  }
+}
+
 function getSelectedProxyMode() {
   const checked = document.querySelector('input[name="proxy-mode"]:checked');
   return checked ? checked.value : "system";
@@ -335,6 +440,29 @@ function updateTabValuesFromSelection() {
       set("tab-value-npm", "已选");
     }
   }
+}
+
+// ---- Git 登录管理（顶层入口，不再藏在网络配置里） ----
+function openGitModal() {
+  renderGitAccounts();
+  updateGitBadge();
+  // 凭据与身份都以磁盘 / 系统凭据库 / 系统 Git helper 为准，每次打开重新拉取
+  detectInFlightHost = null;
+  lastDetectAttemptHost = null;
+  const detectStatus = document.getElementById("git-detect-status");
+  if (detectStatus) {
+    detectStatus.className = "login-hint git-detect-status";
+    detectStatus.textContent = "已自动检测 github.com / gitlab.com；自建实例请输入域名后点「检测系统登录」。";
+  }
+  postCommand("AuthList");
+  postCommand("GitIdentityGet");
+  const modal = document.getElementById("git-modal");
+  if (modal) modal.classList.add("show");
+}
+
+function closeGitModal() {
+  const modal = document.getElementById("git-modal");
+  if (modal) modal.classList.remove("show");
 }
 
 function openProxyModal() {
@@ -446,6 +574,322 @@ function saveProxyConfig() {
   setTimeout(() => {
     postCommand("Refresh");
   }, 100);
+}
+
+// ---- Git 账号与登录引导 ----
+// Token 只在本页表单里暂存一次并立即发给后端验证；后端验证通过才写系统凭据库，
+// 前端不持久化、也不回显任何已保存的 token。
+function renderGitAccounts() {
+  const host = document.getElementById("git-account-list");
+  if (!host) return;
+  if (!state.gitAccounts.length) {
+    host.innerHTML = `<div class="git-account-empty">尚未检测到 Git 登录。公开仓库通常可直接 clone；私有仓库或推送代码请添加账号。系统 Git（GCM / 钥匙串等）已有登录会自动识别，自建实例可在下方输入域名检测。</div>`;
+    return;
+  }
+  host.innerHTML = state.gitAccounts.map((a) => {
+    // 系统 Git 原有登录：git 已能直接使用，不归 DevUp 管；只提供「交给 DevUp」入口
+    if (a.managed === false) {
+      return `
+      <div class="git-account-row">
+        <span class="git-account-kind">${a.kind === "gitlab" ? "GitLab" : "GitHub"}</span>
+        <div class="git-account-main">
+          <span class="git-account-host">${escapeHtml(a.host)}</span>
+          <span class="git-account-user ok">系统 Git 已登录${a.username ? ` · @${escapeHtml(a.username)}` : ""}</span>
+        </div>
+        <span class="git-account-source">系统</span>
+        <button class="git-account-login" data-host="${escapeHtml(a.host)}" data-kind="${a.kind}" data-system="1" type="button">交给 DevUp</button>
+      </div>`;
+    }
+
+    // 三态：无凭据 / 已保存但服务端拒绝 / 有效（或尚未在线校验）
+    let statusText = "凭据已保存";
+    let statusClass = "";
+    if (!a.has_token) {
+      statusText = "凭据缺失，请重新登录";
+      statusClass = "bad";
+    } else if (a.valid === false) {
+      statusText = "登录已失效，请重新登录";
+      statusClass = "bad";
+    } else if (a.valid === true) {
+      statusText = "已登录";
+      statusClass = "ok";
+    }
+    const relogin = (!a.has_token || a.valid === false)
+      ? `<button class="git-account-login" data-host="${escapeHtml(a.host)}" data-kind="${a.kind}" type="button">重新登录</button>`
+      : "";
+    return `
+    <div class="git-account-row">
+      <span class="git-account-kind">${a.kind === "gitlab" ? "GitLab" : "GitHub"}</span>
+      <div class="git-account-main">
+        <span class="git-account-host">${escapeHtml(a.host)}</span>
+        <span class="git-account-user ${statusClass}">${statusText}${a.username ? ` · @${escapeHtml(a.username)}` : ""}</span>
+      </div>
+      ${relogin}
+      <button class="git-account-logout" data-host="${escapeHtml(a.host)}" type="button">退出</button>
+    </div>`;
+  }).join("");
+}
+
+function getLoginKind() {
+  const checked = document.querySelector('input[name="login-kind"]:checked');
+  return checked ? checked.value : "github";
+}
+
+function syncLoginKindUi() {
+  const kind = getLoginKind();
+  document.querySelectorAll('input[name="login-kind"]').forEach((r) => {
+    const label = r.closest(".login-segment");
+    if (label) label.classList.toggle("selected", r.checked);
+  });
+  return kind;
+}
+
+function loginTokenUrl(kind, host) {
+  const clean = String(host || "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+  if (kind === "gitlab") {
+    return `https://${clean || "gitlab.com"}/-/user_settings/personal_access_tokens`;
+  }
+  const h = clean || "github.com";
+  const scope = h === "github.com" ? "?scopes=repo&description=DevUp" : "?description=DevUp";
+  return `https://${h}/settings/tokens/new${scope}`;
+}
+
+function renderTokenGuide() {
+  const kind = getLoginKind();
+  const hostInput = document.getElementById("login-host");
+  const url = loginTokenUrl(kind, hostInput ? hostInput.value : "");
+  const link = document.getElementById("login-token-link");
+  const urlEl = document.getElementById("login-token-url");
+  const steps = document.getElementById("login-token-steps");
+  const fallback = document.getElementById("login-token-fallback");
+  if (link) link.dataset.url = url;
+  if (urlEl) {
+    urlEl.textContent = url;
+    urlEl.title = url;
+  }
+  if (!steps) return;
+  if (fallback) {
+    fallback.textContent = kind === "gitlab"
+      ? "入口找不到时：GitLab 右上角头像 → Preferences → Access Tokens。"
+      : "入口找不到时：GitHub 右上角头像 → Settings → Developer settings → Personal access tokens。";
+  }
+
+  if (kind === "gitlab") {
+    steps.innerHTML = `
+      <li>点击「打开创建页」，在 GitLab 登录并确认当前账号。</li>
+      <li>勾选 <code>read_repository</code> 和 <code>write_repository</code>（拉取 + 推送代码）。</li>
+      <li>点 Create personal access token，复制 <code>glpat-…</code> 粘贴到上方输入框。</li>`;
+  } else {
+    steps.innerHTML = `
+      <li>点击「打开创建页」，在 GitHub 登录（地址已按当前域名生成）。</li>
+      <li>权限默认已勾 <code>repo</code>（私有仓库的拉取与推送）；企业实例若没预选，请手动勾选。</li>
+      <li>点 Generate token，复制 <code>ghp_…</code> 或 <code>github_pat_…</code> 粘贴到上方输入框。</li>`;
+  }
+}
+
+function openLoginModal(opts = {}) {
+  const modal = document.getElementById("login-modal");
+  if (!modal) return;
+  const kind = opts.kind === "gitlab" ? "gitlab" : "github";
+  document.querySelectorAll('input[name="login-kind"]').forEach((r) => {
+    r.checked = r.value === kind;
+  });
+  syncLoginKindUi();
+
+  const hostInput = document.getElementById("login-host");
+  hostInput.value = opts.host || (kind === "gitlab" ? "gitlab.com" : "github.com");
+  document.getElementById("login-token").value = "";
+  document.getElementById("login-desc").textContent =
+    "用于终端 git clone / pull / push 的 HTTPS 免密登录。Token 会写入系统凭据库，并注册为该域名的 Git 凭据助手，只需配置一次。";
+
+  const msg = document.getElementById("login-message");
+  msg.className = opts.message ? "login-message info" : "login-message";
+  msg.textContent = opts.message || "";
+
+  const submit = document.getElementById("login-btn-submit");
+  submit.disabled = false;
+  submit.textContent = "验证并启用 Git 登录";
+  renderTokenGuide();
+  modal.classList.add("show");
+
+  // 自动触发（远端拒绝）说明用户此刻没在操作，直接把焦点放到最需要填的框
+  if (opts.auto) {
+    document.getElementById("login-token").focus();
+  } else {
+    hostInput.focus();
+  }
+}
+
+function closeLoginModal() {
+  const modal = document.getElementById("login-modal");
+  if (modal) modal.classList.remove("show");
+}
+
+function submitLogin() {
+  const kind = getLoginKind();
+  const host = document.getElementById("login-host").value.trim();
+  const token = document.getElementById("login-token").value.trim();
+  const msg = document.getElementById("login-message");
+
+  if (!host) {
+    msg.className = "login-message";
+    msg.textContent = "请填写域名，例如 github.com 或 gitlab.mycompany.com";
+    return;
+  }
+  if (!token) {
+    msg.className = "login-message";
+    msg.textContent = "请粘贴 Access Token（GitHub / GitLab 已不支持账号密码直连 API）";
+    return;
+  }
+
+  msg.className = "login-message info";
+  msg.textContent = "正在验证凭据...";
+  const submit = document.getElementById("login-btn-submit");
+  submit.disabled = true;
+  submit.textContent = "验证中...";
+  postCommand("AuthLogin", { host, kind, token });
+}
+
+function handleLoginResult(data) {
+  const submit = document.getElementById("login-btn-submit");
+  if (submit) {
+    submit.disabled = false;
+    submit.textContent = "验证并启用 Git 登录";
+  }
+  const msg = document.getElementById("login-message");
+  if (!msg) return;
+
+  if (data && data.error) {
+    msg.className = "login-message";
+    msg.textContent = data.error;
+    return;
+  }
+
+  msg.className = "login-message ok";
+  msg.textContent = `已登录 ${data.host || ""}${data.username ? ` · @${data.username}` : ""}，终端 git clone / pull / push 已可直接使用。`;
+  document.getElementById("login-token").value = "";
+  prefillIdentityFromLogin(data);
+  setTimeout(() => {
+    closeLoginModal();
+    appendLog(`🔐 已登录 ${data.host || ""}${data.username ? ` (@${data.username})` : ""}，Git 凭据助手已启用。`);
+    postCommand("Refresh");
+  }, 900);
+}
+
+/// GitHub 用户如果是首次配置，用 PR 隐私邮箱做默认提交身份；仍由用户确认后保存，不静默写入
+function prefillIdentityFromLogin(data) {
+  if (!data || data.error || !data.username) return;
+  const account = state.gitAccounts.find((a) => a.host === data.host);
+  if (!account || account.kind !== "github") return;
+  const nameEl = document.getElementById("git-user-name");
+  const emailEl = document.getElementById("git-user-email");
+  if (!nameEl || !emailEl) return;
+  if (!nameEl.value.trim()) nameEl.value = data.username;
+  if (!emailEl.value.trim()) emailEl.value = `${data.username}@users.noreply.github.com`;
+}
+
+function handleGitIdentity(data) {
+  const status = document.getElementById("git-identity-status");
+  if (!status) return;
+
+  if (data && data.error) {
+    // 后端保存失败：保留用户已填内容，只提示错误
+    status.className = "login-message git-identity-status";
+    status.textContent = data.error;
+    return;
+  }
+
+  const name = (data && data.name) || "";
+  const email = (data && data.email) || "";
+  state.gitIdentity = { name, email };
+  document.getElementById("git-user-name").value = name;
+  document.getElementById("git-user-email").value = email;
+
+  if (!name && !email) {
+    status.className = "login-message info git-identity-status";
+    status.textContent = "尚未设置提交身份，提交代码前请填写并保存。";
+  } else if (!name || !email) {
+    status.className = "login-message info git-identity-status";
+    status.textContent = "只设置了一半：提交前请补全名字和邮箱。";
+  } else {
+    status.className = "login-message ok git-identity-status";
+    status.textContent = "已设置提交身份，git commit 可直接使用。";
+  }
+}
+
+/// 系统 Git 登录检测：自建 GitLab 等域名无法自动枚举，允许用户输入后主动查询
+let detectInFlightHost = null;
+let lastDetectAttemptHost = null;
+
+function detectSystemLogin(force = false) {
+  const input = document.getElementById("git-detect-host");
+  const status = document.getElementById("git-detect-status");
+  if (!input || !status) return;
+  const host = input.value.trim();
+  if (!host) {
+    status.className = "login-hint git-detect-status bad";
+    status.textContent = "请输入要检测的域名，例如 gitlab.company.com";
+    return;
+  }
+  if (detectInFlightHost === host) return;
+  // 失焦自动检测不重复查同一域名；按钮 / 回车允许强制重试
+  if (!force && lastDetectAttemptHost === host) return;
+  lastDetectAttemptHost = host;
+  detectInFlightHost = host;
+  status.className = "login-hint git-detect-status";
+  status.textContent = `正在检测 ${host} 的系统 Git 凭据...`;
+  postCommand("AuthDetect", { host });
+}
+
+/// 未检测到本地登录时，直接带着用户输入的域名打开登录窗，省去重填
+function loginDetectedHost(host) {
+  if (!host) return;
+  const kind = host.toLowerCase().includes("gitlab") ? "gitlab" : "github";
+  openLoginModal({
+    host,
+    kind,
+    message: "本地没有找到该域名的完整 Git 凭据。粘贴 Access Token 后由 DevUp 接管，clone / pull / push 可直接使用。",
+  });
+}
+
+function handleAuthDetected(data) {
+  detectInFlightHost = null;
+  const status = document.getElementById("git-detect-status");
+  if (!status) return;
+  if (data && data.error) {
+    const managed = data.error.includes("已由 DevUp 管理");
+    status.className = `login-hint git-detect-status ${managed ? "" : "bad"}`;
+    status.textContent = data.error;
+    return;
+  }
+  if (data && data.username !== undefined && data.username !== null) {
+    status.className = "login-hint git-detect-status ok";
+    status.textContent = `已检测到 ${data.host} 的系统 Git 登录${data.username ? `（@${data.username}）` : ""}，clone / pull / push 可直接使用。`;
+    const input = document.getElementById("git-detect-host");
+    if (input) input.value = "";
+    return;
+  }
+  status.className = "login-hint git-detect-status";
+  status.innerHTML = `未检测到 ${escapeHtml(data.host)} 的系统 Git 登录。
+    <button class="git-detect-login" data-host="${escapeHtml(data.host)}" type="button">登录此域名</button>`;
+}
+
+function saveGitIdentity() {
+  const name = document.getElementById("git-user-name").value.trim();
+  const email = document.getElementById("git-user-email").value.trim();
+  const status = document.getElementById("git-identity-status");
+  if (!name || !email) {
+    status.className = "login-message git-identity-status";
+    status.textContent = "请把名字和邮箱都填上（提交身份两者缺一不可）。";
+    return;
+  }
+  status.className = "login-message info git-identity-status";
+  status.textContent = "正在写入 Git 全局配置...";
+  postCommand("GitIdentitySet", { name, email });
 }
 
 function appendLog(line) {
@@ -1401,6 +1845,14 @@ function renderAll() {
   envContainer.innerHTML = "";
   agentContainer.innerHTML = "";
 
+  // 首次 StatusList 到达前显示探测占位，避免启动后只看到空分区
+  if (!state.softwares.length) {
+    const loading = `<div class="grid-loading">正在检测本机环境…</div>`;
+    envContainer.innerHTML = loading;
+    agentContainer.innerHTML = loading;
+    return;
+  }
+
   state.softwares.forEach((item) => {
     const card = document.createElement("div");
     card.className = "card";
@@ -1573,8 +2025,19 @@ window.addEventListener("DOMContentLoaded", () => {
     }, 10000);
   });
 
-  // 代理与镜像配置弹窗
+  // 顶部 Git 登录入口 + 网络配置弹窗
+  const gitBadge = document.getElementById("git-badge");
+  if (gitBadge) gitBadge.addEventListener("click", openGitModal);
   document.getElementById("proxy-badge").addEventListener("click", openProxyModal);
+
+  const gitModalClose = document.getElementById("git-modal-close");
+  if (gitModalClose) gitModalClose.addEventListener("click", closeGitModal);
+  const gitModalEl = document.getElementById("git-modal");
+  if (gitModalEl) {
+    gitModalEl.addEventListener("click", (e) => {
+      if (e.target.id === "git-modal") closeGitModal();
+    });
+  }
 
   // 卡片会被 renderAll 反复重建，复制按钮改用网格上的事件委托，避免重建后失绑
   ["env-grid", "agent-grid"].forEach((gridId) => {
@@ -1590,6 +2053,129 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("#proxy-modal .modal-tab").forEach((tab) => {
     tab.addEventListener("click", () => activateModalTab(tab.dataset.tab));
   });
+
+  // Git 账号：添加 / 退出
+  const gitAddBtn = document.getElementById("git-account-add");
+  if (gitAddBtn) gitAddBtn.addEventListener("click", () => openLoginModal());
+  const gitList = document.getElementById("git-account-list");
+  if (gitList) {
+    gitList.addEventListener("click", (e) => {
+      const reloginBtn = e.target.closest(".git-account-login");
+      if (reloginBtn) {
+        const isSystem = reloginBtn.dataset.system === "1";
+        openLoginModal({
+          host: reloginBtn.dataset.host,
+          kind: reloginBtn.dataset.kind,
+          message: isSystem
+            ? "系统 Git 已登录，可直接使用；如需由 DevUp 统一管理，请粘贴该域名的 Access Token。"
+            : "凭据已失效或缺失，请粘贴新的 Access Token。",
+        });
+        return;
+      }
+      const btn = e.target.closest(".git-account-logout");
+      if (!btn || !btn.dataset.host) return;
+      appendLog(`🔓 正在退出 ${btn.dataset.host} ...`);
+      postCommand("AuthLogout", { host: btn.dataset.host });
+    });
+  }
+
+  // Windows 自绘标题栏按钮（macOS 隐藏，不会命中）
+  const winMin = document.getElementById("win-min");
+  if (winMin) winMin.addEventListener("click", () => postCommand("WindowMinimize"));
+  const winMax = document.getElementById("win-max");
+  if (winMax) winMax.addEventListener("click", () => postCommand("WindowToggleMaximize"));
+  const winClose = document.getElementById("win-close");
+  if (winClose) winClose.addEventListener("click", () => postCommand("WindowClose"));
+
+  // 系统 Git 登录检测（自建 GitLab 等手动域名）
+  const detectBtn = document.getElementById("git-detect-btn");
+  if (detectBtn) detectBtn.addEventListener("click", () => detectSystemLogin(true));
+  const detectInput = document.getElementById("git-detect-host");
+  if (detectInput) {
+    // 输入后离开输入框即自动查一次本地凭据，不需要先找按钮
+    detectInput.addEventListener("blur", () => {
+      if (detectInput.value.trim()) detectSystemLogin();
+    });
+    detectInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        detectSystemLogin(true);
+      }
+    });
+  }
+  const detectStatusEl = document.getElementById("git-detect-status");
+  if (detectStatusEl) {
+    detectStatusEl.addEventListener("click", (e) => {
+      const btn = e.target.closest(".git-detect-login");
+      if (btn) loginDetectedHost(btn.dataset.host);
+    });
+  }
+
+  // 提交身份：只写 Git 全局配置，不涉及账号 Token
+  const identitySave = document.getElementById("git-identity-save");
+  if (identitySave) identitySave.addEventListener("click", saveGitIdentity);
+  ["git-user-name", "git-user-email"].forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) {
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveGitIdentity();
+        }
+      });
+    }
+  });
+
+  // Git 登录引导弹窗
+  const loginCancel = document.getElementById("login-btn-cancel");
+  if (loginCancel) loginCancel.addEventListener("click", closeLoginModal);
+  const loginSubmit = document.getElementById("login-btn-submit");
+  if (loginSubmit) loginSubmit.addEventListener("click", submitLogin);
+  const loginModal = document.getElementById("login-modal");
+  if (loginModal) {
+    loginModal.addEventListener("click", (e) => {
+      if (e.target.id === "login-modal") closeLoginModal();
+    });
+  }
+  document.querySelectorAll('input[name="login-kind"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      syncLoginKindUi();
+      const hostInput = document.getElementById("login-host");
+      const cur = hostInput.value.trim().toLowerCase();
+      // 只在仍是默认域名时跟随切换，避免覆盖用户手填的企业域名
+      if (!cur || cur === "github.com" || cur === "gitlab.com") {
+        hostInput.value = getLoginKind() === "gitlab" ? "gitlab.com" : "github.com";
+      }
+      renderTokenGuide();
+    });
+  });
+  const loginHostInput = document.getElementById("login-host");
+  if (loginHostInput) {
+    loginHostInput.addEventListener("input", renderTokenGuide);
+    loginHostInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        document.getElementById("login-token").focus();
+      }
+    });
+  }
+  const loginTokenInput = document.getElementById("login-token");
+  if (loginTokenInput) {
+    loginTokenInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submitLogin();
+      }
+    });
+  }
+  const loginTokenLink = document.getElementById("login-token-link");
+  if (loginTokenLink) {
+    loginTokenLink.addEventListener("click", () => {
+      const url = loginTokenLink.dataset.url
+        || loginTokenUrl(getLoginKind(), document.getElementById("login-host").value);
+      openExternal(url);
+    });
+  }
 
   // 镜像单选按钮由后端清单动态渲染，故用事件委托绑定，避免渲染时机竞态
   const modalEl = document.getElementById("proxy-modal");
@@ -1696,7 +2282,9 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // 初始加载
+  // 初始加载：先渲染探测占位，再触发一次完整刷新
+  updateGitBadge();
+  renderAll();
   setTimeout(() => {
     postCommand("Refresh");
   }, 200);

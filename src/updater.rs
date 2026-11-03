@@ -61,15 +61,20 @@ impl SelfUpdater {
         r_parts > c_parts
     }
 
-    /// 检查 GitHub Releases 是否有新版本
-    pub async fn check_for_update(proxy_url: Option<String>) -> Result<Option<UpdateInfo>> {
+    /// 检查 GitHub Releases 是否有新版本。
+    ///
+    /// `auth_events`：401/403/429 且未登录时用它下发 `AuthRequired` 弹登录引导；
+    /// 传 `None` 只报错不弹窗（测试/后台静默调用）。
+    pub async fn check_for_update(
+        proxy_url: Option<String>,
+        auth_events: Option<&UnboundedSender<AppEvent>>,
+    ) -> Result<Option<UpdateInfo>> {
         let client = create_http_client(proxy_url.as_deref())?;
         let current_version = env!("CARGO_PKG_VERSION").to_string();
 
         let api_url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
 
-        let resp = client
-            .get(&api_url)
+        let resp = crate::network::auth::authorize(client.get(&api_url), &api_url)
             .timeout(Duration::from_secs(8))
             .header("Accept", "application/vnd.github.v3+json")
             .send()
@@ -77,6 +82,13 @@ impl SelfUpdater {
             .with_context(|| format!("请求 GitHub Releases API 失败: {}", api_url))?;
 
         if !resp.status().is_success() {
+            if let Some(challenge) =
+                crate::network::auth::challenge(&api_url, resp.status())
+            {
+                if let Some(tx) = auth_events {
+                    let _ = tx.send(AppEvent::AuthRequired(challenge));
+                }
+            }
             bail!("GitHub API 返回非成功状态码: {}", resp.status());
         }
 

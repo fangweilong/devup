@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
 use reqwest::{Client, Proxy};
 use std::path::Path;
@@ -40,11 +40,17 @@ pub async fn download_file<F>(
 where
     F: FnMut(DownloadProgress) + Send + 'static,
 {
-    let response = client
-        .get(url)
+    // 已登录 host 的下载自动带认证头；镜像域名不受影响（auth 按目标 host 精确匹配）
+    let response = crate::network::auth::authorize(client.get(url), url)
         .send()
         .await
         .with_context(|| format!("发起下载请求失败: {}", url))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        // 必须早于创建文件：401/403 的错误页不能写成 .exe/.msi
+        bail!("下载请求失败（HTTP {}）: {}", status.as_u16(), url);
+    }
 
     let total_bytes = response.content_length().unwrap_or(0);
     let mut downloaded_bytes: u64 = 0;

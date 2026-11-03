@@ -78,6 +78,8 @@ pub struct AppConfig {
     pub proxy: ProxyConfig,
     pub mirror: MirrorConfig,
     pub node: NodeConfig,
+    /// GitHub / GitLab 账号元数据；token 在系统凭据库，不在此处
+    pub git_accounts: Vec<crate::network::auth::GitAccount>,
 }
 
 impl AppConfig {
@@ -251,6 +253,37 @@ mod tests {
                 serde_json::from_str(&format!(r#"{{"node":{{"mode":"{raw}"}}}}"#)).unwrap();
             assert!(cfg.node_guards_enabled(), "mode={raw:?} 应保持护栏启用");
         }
+    }
+
+    #[test]
+    fn test_git_accounts_roundtrip_without_secrets() {
+        // 旧配置没有该字段时必须照常加载；账号元数据只含 host/kind/username
+        let legacy: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(legacy.git_accounts.is_empty());
+
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{"git_accounts":[{"host":"gitlab.corp.example.com","kind":"gitlab","username":"alice"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.git_accounts.len(), 1);
+        assert_eq!(cfg.git_accounts[0].host, "gitlab.corp.example.com");
+        assert_eq!(cfg.git_accounts[0].username, "alice");
+        // 旧配置没有 git_helper_backup：默认空，退出登录时只移除 DevUp 的配置
+        assert!(cfg.git_accounts[0].git_helper_backup.is_empty());
+
+        // 首次登录时保存的原 helper 配置必须能持久化（退出时恢复）
+        let with_backup: AppConfig = serde_json::from_str(
+            r#"{"git_accounts":[{"host":"github.com","kind":"github","username":"bob","git_helper_backup":["","!echo old"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_backup.git_accounts[0].git_helper_backup,
+            vec!["".to_string(), "!echo old".to_string()]
+        );
+
+        let text = serde_json::to_string(&cfg).unwrap();
+        assert!(text.contains("\"git_accounts\""));
+        assert!(!text.contains("\"token\":"));
     }
 
     #[test]

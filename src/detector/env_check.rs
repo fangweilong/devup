@@ -436,11 +436,17 @@ impl Detector {
     }
 
     /// 联网并发拉取所有组件的官方最新版本，并更新内存缓存
-    /// 返回 (是否有版本变更, 本次成功拉取到的版本列表[(id, version)])
+    /// 返回 (是否有版本变更, 本次成功拉取到的版本列表[(id, version)], 登录引导)。
+    /// 第三个值只在 GitHub API 返回未认证/被限流状态（401 或 403/429）且未登录时出现，由调用方转成
+    /// `AppEvent::AuthRequired` 弹出登录窗。
     pub async fn fetch_latest_versions_online(
         client: &reqwest::Client,
         npm_registry: &str,
-    ) -> (bool, Vec<(String, String)>) {
+    ) -> (
+        bool,
+        Vec<(String, String)>,
+        Option<crate::network::auth::AuthChallenge>,
+    ) {
         let mut updated = false;
         let mut fetched_results = Vec::new();
         let clean_registry = npm_registry.trim_end_matches('/');
@@ -473,11 +479,11 @@ impl Detector {
                             } else {
                                 format!("v{}", ver)
                             };
-                            return Some((id.to_string(), formatted));
+                            return (Some((id.to_string(), formatted)), None);
                         }
                     }
                 }
-                None
+                (None, None)
             }));
         }
 
@@ -498,13 +504,13 @@ impl Detector {
                                 || item.get("lts").and_then(|v| v.as_str()).is_some();
                             if is_lts {
                                 if let Some(ver) = item.get("version").and_then(|v| v.as_str()) {
-                                    return Some(("nodejs".to_string(), ver.to_string()));
+                                    return (Some(("nodejs".to_string(), ver.to_string())), None);
                                 }
                             }
                         }
                     }
                 }
-                None
+                (None, None)
             }));
         }
 
@@ -520,16 +526,17 @@ impl Detector {
         for (id, repo) in gh_repos {
             let client_c = client.clone();
             futs.push(tokio::spawn(async move {
-                // 优先通过 GitHub API 查询
+                // 优先通过 GitHub API 查询（已登录时自动带 token，避免匿名 60 次/时限流）
                 let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
-                let res = client_c
-                    .get(&api_url)
+                let mut auth_hint = None;
+                let res = crate::network::auth::authorize(client_c.get(&api_url), &api_url)
                     .header("User-Agent", "DevUp-Client")
                     .timeout(std::time::Duration::from_millis(5000))
                     .send()
                     .await;
 
                 if let Ok(resp) = res {
+                    auth_hint = crate::network::auth::challenge(&api_url, resp.status());
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         // 从 GitHub Release 元数据中提取对应系统的安装包真实直链
                         if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
@@ -551,7 +558,7 @@ impl Detector {
 
                         if let Some(tag) = json.get("tag_name").and_then(|v| v.as_str()) {
                             let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
-                            return Some((id.to_string(), clean_tag.to_string()));
+                            return (Some((id.to_string(), clean_tag.to_string())), auth_hint);
                         }
                     }
                 }
@@ -570,17 +577,25 @@ impl Detector {
                         let tag = &final_url[idx + "/tag/".len()..];
                         let clean_tag = tag.split(".windows.").next().unwrap_or(tag);
                         if !clean_tag.is_empty() {
-                            return Some((id.to_string(), clean_tag.to_string()));
+                            return (Some((id.to_string(), clean_tag.to_string())), auth_hint);
                         }
                     }
                 }
 
-                None
+                (None, auth_hint)
             }));
         }
 
+        let mut challenge = None;
         for f in futs {
-            if let Ok(Some((id, ver))) = f.await {
+            let Ok((found, hint)) = f.await else {
+                continue;
+            };
+            // 多个仓库并发命中同一 host 时只保留第一条引导，弹窗由 auth 模块按 host 去重
+            if challenge.is_none() {
+                challenge = hint;
+            }
+            if let Some((id, ver)) = found {
                 let current = Self::get_latest_version(&id);
                 if current.as_deref() != Some(&ver) {
                     Self::set_latest_version(&id, ver.clone());
@@ -590,7 +605,7 @@ impl Detector {
             }
         }
 
-        (updated, fetched_results)
+        (updated, fetched_results, challenge)
     }
 
     /// 检测一个 CLI 软件并组装状态卡片数据
