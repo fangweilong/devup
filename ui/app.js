@@ -46,11 +46,15 @@ if (isWindows) {
 }
 
 if (isMac || isWindows) {
-  // 必须在 mousedown 阶段启动原生拖拽，让系统使用真实的按下事件作为
-  // 拖拽锚点。延迟到 mousemove/IPC 阶段会丢失按下位置，尤其在副屏上会造成
-  // 窗口瞬移到鼠标下方。Windows 走同一 IPC，由 tao 发 HTCAPTION，保留贴边分屏。
+  // Windows：mousedown 立即发 DragWindow，由 tao 发 HTCAPTION，保留贴边分屏。
+  // macOS：按下只记录锚点，位移超过阈值才发起原生拖拽。纯点击若也调用
+  // performWindowDragWithEvent，AppKit 会开一个没有实际位移的拖拽会话并在
+  // mouseUp 时刷 "Window move completed without beginning"。
+  const DRAG_THRESHOLD_PX = 4;
   const headerEl = document.querySelector("header");
   if (headerEl) {
+    let pressPoint = null;
+
     headerEl.addEventListener("mousedown", (e) => {
       if (e.button !== 0 || e.target.closest("button, input, select, textarea, a")) {
         return;
@@ -61,8 +65,38 @@ if (isMac || isWindows) {
         postCommand("WindowToggleMaximize");
         return;
       }
-      postCommand("DragWindow");
+      if (isWindows) {
+        postCommand("DragWindow");
+        return;
+      }
+      pressPoint = { x: e.clientX, y: e.clientY };
     });
+
+    if (isMac) {
+      const clearPress = () => {
+        pressPoint = null;
+      };
+      window.addEventListener("mousemove", (e) => {
+        if (!pressPoint) return;
+        // 在窗口外松开左键可能收不到 mouseup：一旦按键已抬起就丢弃锚点，
+        // 避免回到窗口后一次普通悬停误触发拖拽
+        if ((e.buttons & 1) === 0) {
+          pressPoint = null;
+          return;
+        }
+        if (
+          Math.abs(e.clientX - pressPoint.x) < DRAG_THRESHOLD_PX &&
+          Math.abs(e.clientY - pressPoint.y) < DRAG_THRESHOLD_PX
+        ) {
+          return;
+        }
+        // 只发一次：原生拖拽循环接管后不再需要前端跟踪
+        pressPoint = null;
+        postCommand("DragWindow");
+      });
+      window.addEventListener("mouseup", clearPress);
+      window.addEventListener("blur", clearPress);
+    }
   }
 }
 

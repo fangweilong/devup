@@ -41,7 +41,7 @@ pub enum IpcCommand {
     AuthDetect { host: String },
     CheckUpdate,
     PerformSelfUpdate { download_url: String },
-    /// 头部空白区按下时，请求原生整窗拖拽（macOS 直接发起；Windows 自绘标题栏同链路）
+    /// 头部空白区拖动超过阈值后，请求原生整窗拖拽（macOS 直接发起；Windows 自绘标题栏同链路）
     DragWindow,
     /// 自绘标题栏窗口控制
     WindowMinimize,

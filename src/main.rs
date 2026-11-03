@@ -43,10 +43,12 @@ enum UserEvent {
     Quit,
 }
 
-/// macOS: 在真实的左键按下事件上启动系统级整窗拖拽。
+/// macOS: 在左键拖拽事件上启动系统级整窗拖拽。
 ///
-/// 必须在前端 mousedown 阶段调用。此时 currentEvent 仍保留用户实际按下
-/// 的位置，macOS 才能正确计算窗口与鼠标之间的偏移量。
+/// 前端在按下后位移超过阈值时才经 IPC 调到这里：纯点击不建立拖拽会话，
+/// 避免 AppKit 在 mouseUp 时输出 "Window move completed without beginning"。
+/// 必须直接使用 currentEvent（真实的左键事件），macOS 才能正确计算窗口与
+/// 鼠标之间的偏移量；不要把全局鼠标坐标合成事件传进来。
 #[cfg(target_os = "macos")]
 unsafe fn native_drag_window(ns_window: *mut std::ffi::c_void) {
     use objc2::msg_send;
@@ -184,7 +186,7 @@ fn main() -> anyhow::Result<()> {
     // 注意：不要开启 movable_by_window_background —— tao 的实现会在每一次
     // NSLeftMouseDown 上无条件调用 performWindowDragWithEvent:，会把边缘
     // 拉拽伸缩（以及内容区文字选中）劫持成整窗移动。窗口拖动改为：头部
-    // 空白区按下时经 IPC 触发 DragWindow，由 drag_window() 定向发起整窗拖拽。
+    // 空白区按下并位移超过阈值后经 IPC 触发 DragWindow，定向发起整窗拖拽。
     #[cfg(target_os = "macos")]
     {
         use tao::platform::macos::WindowBuilderExtMacOS;
