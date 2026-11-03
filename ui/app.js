@@ -67,8 +67,8 @@ if (isMac || isWindows) {
 }
 
 if (isMac) {
-  // tao 0.37 无应用菜单，Cmd+Q 没有系统级归宿；webview 获得焦点时快捷键
-  // 会作为普通 keydown 进入页面，这里拦截并经 IPC 走与关闭窗口一致的退出链路。
+  // 启动时已装原生主菜单，Cmd+Q 由系统 terminate: 处理；这里保留一层兜底：
+  // 菜单未生效或按键先被 webview 吃掉时，仍经 IPC 走与关闭窗口一致的退出链路。
   window.addEventListener("keydown", (e) => {
     if (
       e.metaKey &&

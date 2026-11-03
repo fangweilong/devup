@@ -34,6 +34,8 @@ enum UserEvent {
     /// 首屏 HTML 加载完成后再显示窗口，避免 WebView2 初始化期间的白屏
     ShowWindow,
     /// 自绘标题栏：原生拖拽 / 最小化 / 最大化切换
+    /// Windows 专属：macOS 走 native_drag_window() 直接拖拽，不会构造此变体
+    #[cfg_attr(not(windows), allow(dead_code))]
     WindowDrag,
     WindowMinimize,
     WindowToggleMaximize,
@@ -58,6 +60,74 @@ unsafe fn native_drag_window(ns_window: *mut std::ffi::c_void) {
     }
 
     let _: () = msg_send![window, performWindowDragWithEvent: event];
+}
+
+/// macOS: 安装最小主菜单。
+///
+/// tao 0.37 不创建应用菜单。没有主菜单时，Cmd+C / Cmd+V / Cmd+X / Cmd+A /
+/// Cmd+Z 这类系统级 key equivalent 没有分发入口（命令本质上是对第一响应者
+/// 调用 `copy:` / `paste:` 等方法），WKWebView 输入框里的粘贴会静默失效；
+/// Cmd+Q 同理，前端才需要额外拦截兜底。
+///
+/// 菜单只保留退出与编辑两组：退出交给系统 `terminate:`，编辑命令交给第一
+/// 响应者（WKWebView），不引入业务逻辑。必须在主线程、事件循环启动前调用。
+#[cfg(target_os = "macos")]
+fn install_macos_main_menu() {
+    use objc2::runtime::Sel;
+    use objc2::{MainThreadMarker, MainThreadOnly, sel};
+    use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
+    use objc2_foundation::NSString;
+
+    // SAFETY: main() 在主线程执行，且此处尚未进入事件循环。
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let main_menu = NSMenu::new(mtm);
+
+    // 应用菜单：Cmd+Q 走系统 terminate:，与关闭窗口同一条退出链路
+    let app_menu_item = NSMenuItem::new(mtm);
+    let app_menu = NSMenu::new(mtm);
+    app_menu.setTitle(&NSString::from_str("DevUp"));
+    let quit = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str("退出 DevUp"),
+            Some(sel!(terminate:)),
+            &NSString::from_str("q"),
+        )
+    };
+    app_menu.addItem(&quit);
+    app_menu_item.setSubmenu(Some(&app_menu));
+    main_menu.addItem(&app_menu_item);
+
+    // 编辑菜单：action 均为第一响应者方法；大写快捷键表示带 Shift
+    let edit_menu_item = NSMenuItem::new(mtm);
+    let edit_menu = NSMenu::new(mtm);
+    edit_menu.setTitle(&NSString::from_str("编辑"));
+    let entries: [(&str, Sel, &str); 6] = [
+        ("撤销", sel!(undo:), "z"),
+        ("重做", sel!(redo:), "Z"),
+        ("剪切", sel!(cut:), "x"),
+        ("复制", sel!(copy:), "c"),
+        ("粘贴", sel!(paste:), "v"),
+        ("全选", sel!(selectAll:), "a"),
+    ];
+    for (index, (title, action, key)) in entries.into_iter().enumerate() {
+        if index == 2 {
+            edit_menu.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        edit_menu.addItem(&item);
+    }
+    edit_menu_item.setSubmenu(Some(&edit_menu));
+    main_menu.addItem(&edit_menu_item);
+
+    NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
 }
 
 fn build_inlined_html() -> String {
@@ -90,6 +160,10 @@ fn main() -> anyhow::Result<()> {
     // 2. 初始化 GUI 事件循环与跨线程 Proxy
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+
+    // macOS: 必须在事件循环启动前装好主菜单，否则 Cmd+C/V/X/A 没有分发入口
+    #[cfg(target_os = "macos")]
+    install_macos_main_menu();
 
     let window_icon = Icon::from_rgba(APP_ICON_RGBA.to_vec(), 32, 32).ok();
 
@@ -730,9 +804,8 @@ fn main() -> anyhow::Result<()> {
     });
 
     // 5. 事件循环驱动
-    // macOS: tao 0.37 没有应用菜单，Cmd+Q 无系统级归宿。主路径是前端拦截
-    // keydown 后经 IPC Quit 投递 UserEvent::Quit；这里额外跟踪修饰键并在
-    // webview 尚未接管焦点时（KeyboardInput 直达 tao）原生兜底一次。
+    // macOS: 启动时已安装原生主菜单，Cmd+Q 由系统 terminate: 处理。
+    // 这里保留原生兜底：webview 尚未接管焦点时按键直达 tao，跟踪修饰键再兜底一次。
     #[cfg(target_os = "macos")]
     use tao::event::ElementState;
     #[cfg(target_os = "macos")]

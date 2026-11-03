@@ -26,5 +26,8 @@ embed-resource = "3.0.12"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
+# tao 0.37 不创建应用菜单；没有主菜单时 Cmd+C/V/X/A/Z 没有分发入口，
+# 需自行安装一个最小主菜单（编辑命令转发给第一响应者 WKWebView）
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSMenu", "NSMenuItem", "NSApplication"] }
 # 同上：Git 凭据进 macOS Keychain
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
